@@ -96,6 +96,20 @@ function hasValidAudioFile(filePath, minBytes = 250) {
   }
 }
 
+async function hasAudioStream(filePath) {
+  if (!hasValidAudioFile(filePath, 250)) return false;
+  try {
+    const fp = toFfmpegPath(filePath);
+    const { stdout } = await runCmd(
+      `ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1 "${fp}"`,
+      3000
+    );
+    return stdout.trim().includes('audio');
+  } catch {
+    return false;
+  }
+}
+
 async function getMediaDurationSec(filePath) {
   const fp = toFfmpegPath(filePath);
   try {
@@ -343,7 +357,10 @@ async function fetchGoogleTtsMp3(text, lang = 'my', outMp3Path) {
       const buf = Buffer.from(await res.arrayBuffer());
       if (buf.length >= 250) {
         fs.writeFileSync(outMp3Path, buf);
-        return true;
+        if (await hasAudioStream(outMp3Path)) {
+          return true;
+        }
+        fs.rmSync(outMp3Path, { force: true });
       }
     } catch {
       // Next
@@ -402,25 +419,32 @@ async function synthesizeSingleSegmentWav(
   const fittedWav = path.join(segDir, 'fitted.wav');
   const fittedFfmpeg = toFfmpegPath(fittedWav);
   const maxAllowedSec = Math.max(0.65, Number(seg.availSec) || 1.2);
+  const fallbackSec = Math.max(0.6, Math.min(1.2, maxAllowedSec));
 
-  const ttsMp3 = path.join(segDir, 'tts_out.mp3');
-  const okTts = await fetchGoogleTtsMp3(safeText, targetLang, ttsMp3);
-  if (okTts && hasValidAudioFile(ttsMp3, 250)) {
-    const audioFilter = buildVoiceFilter(voiceId, speechSpeed, pitchShift, styleMode);
+  try {
+    const ttsMp3 = path.join(segDir, 'tts_out.mp3');
+    const okTts = await fetchGoogleTtsMp3(safeText, targetLang, ttsMp3);
+    if (okTts && (await hasAudioStream(ttsMp3))) {
+      const audioFilter = buildVoiceFilter(voiceId, speechSpeed, pitchShift, styleMode);
+      await runCmd(
+        `ffmpeg -y -i "${toFfmpegPath(ttsMp3)}" -af "${audioFilter},atrim=0:${maxAllowedSec.toFixed(2)},asetpts=PTS-STARTPTS" -ar 44100 -ac 2 "${fittedFfmpeg}"`,
+        6000
+      );
+    } else {
+      await runCmd(
+        `ffmpeg -y -f lavfi -i "anullsrc=r=44100:cl=stereo" -t ${fallbackSec.toFixed(2)} "${fittedFfmpeg}"`,
+        4000
+      );
+    }
+  } catch {
     await runCmd(
-      `ffmpeg -y -i "${toFfmpegPath(ttsMp3)}" -af "${audioFilter},atrim=0:${maxAllowedSec.toFixed(2)},asetpts=PTS-STARTPTS" -ar 44100 -ac 2 "${fittedFfmpeg}"`,
-      5000
-    );
-  } else {
-    const estSec = Math.max(0.6, Math.min(1.2, maxAllowedSec));
-    await runCmd(
-      `ffmpeg -y -f lavfi -i "anullsrc=r=44100:cl=stereo" -t ${estSec.toFixed(2)} "${fittedFfmpeg}"`,
-      3000
+      `ffmpeg -y -f lavfi -i "anullsrc=r=44100:cl=stereo" -t ${fallbackSec.toFixed(2)} "${fittedFfmpeg}"`,
+      4000
     );
   }
 
   const rawDurSec = await getMediaDurationSec(fittedWav);
-  return { fittedWav, durMs: Math.max(250, Math.round((rawDurSec || 0.8) * 1000)) };
+  return { fittedWav, durMs: Math.max(250, Math.round((rawDurSec || fallbackSec) * 1000)) };
 }
 
 async function buildOnTimeTtsAudioAndSubEvents(
