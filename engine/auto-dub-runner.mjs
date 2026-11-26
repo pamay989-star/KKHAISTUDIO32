@@ -10,8 +10,8 @@ const DEFAULT_SPEECH_TEMPO = 0.94;
 const DEFAULT_GENDER = 'male';
 const DEFAULT_PITCH = 0;
 const DEFAULT_LANG = 'my';
-const TTS_CONCURRENCY = 28;
-const TRANSLATE_CONCURRENCY = 28;
+const TTS_CONCURRENCY = 6;
+const TRANSLATE_CONCURRENCY = 12;
 
 function normalizeSpeechTempo(rawSpeed) {
   const num = Number(rawSpeed);
@@ -76,7 +76,7 @@ function cleanupOldWorkspaceFiles(maxAgeMs = 15 * 60 * 1000) {
 
 setInterval(() => cleanupOldWorkspaceFiles(), 10 * 60 * 1000);
 
-function runCmd(cmd, timeoutMs = 45000) {
+function runCmd(cmd, timeoutMs = 60000) {
   return new Promise((resolve, reject) => {
     exec(cmd, { maxBuffer: 1024 * 1024 * 128, timeout: timeoutMs }, (err, stdout, stderr) => {
       if (err) {
@@ -103,7 +103,7 @@ async function hasAudioStream(filePath) {
     const fp = toFfmpegPath(filePath);
     const { stdout } = await runCmd(
       `ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1 "${fp}"`,
-      3000
+      5000
     );
     return stdout.trim().includes('audio');
   } catch {
@@ -115,7 +115,7 @@ async function getMediaDurationSec(filePath) {
   const fp = toFfmpegPath(filePath);
   try {
     const cmd = `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${fp}"`;
-    const { stdout } = await runCmd(cmd, 3000);
+    const { stdout } = await runCmd(cmd, 5000);
     const val = parseFloat(stdout.trim());
     if (!Number.isNaN(val) && val > 0.05) return val;
   } catch {
@@ -128,7 +128,7 @@ async function getVideoDimensions(filePath) {
   const fp = toFfmpegPath(filePath);
   try {
     const cmd = `ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "${fp}"`;
-    const { stdout } = await runCmd(cmd, 3000);
+    const { stdout } = await runCmd(cmd, 5000);
     const parts = stdout.trim().split('x').map((n) => parseInt(n, 10));
     if (parts.length === 2 && parts[0] > 0 && parts[1] > 0) {
       return { width: parts[0], height: parts[1] };
@@ -168,7 +168,7 @@ async function probeMediaStreams(filePath) {
     const fp = toFfmpegPath(filePath);
     const { stdout } = await runCmd(
       `ffprobe -v error -show_entries stream=codec_type,codec_name,width,height -of json "${fp}"`,
-      3000
+      5000
     );
     const parsed = JSON.parse(stdout || '{}');
     const streams = Array.isArray(parsed.streams) ? parsed.streams : [];
@@ -259,7 +259,7 @@ async function translateSingleChunk(chunkText, targetLang = 'my', styleMode = 'p
 
   for (const url of endpoints) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 1400);
+    const timer = setTimeout(() => controller.abort(), 2000);
     try {
       const res = await fetch(url, {
         signal: controller.signal,
@@ -348,7 +348,7 @@ async function fetchGoogleTtsMp3(text, lang = 'my', outMp3Path) {
   ];
   for (const url of endpoints) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 1400);
+    const timer = setTimeout(() => controller.abort(), 2000);
     try {
       const res = await fetch(url, {
         signal: controller.signal,
@@ -420,6 +420,41 @@ function buildVoiceFilter(voiceId, speechSpeed, pitchShift, styleMode = 'pro_rec
   return `aresample=24000,asetrate=${shiftedRate},aresample=44100,${tempoChain},${eqChain},volume=${outputGain}`;
 }
 
+async function createSilentWavFile(outWavPath, durationSec, timeoutMs = 15000) {
+  const sec = Math.max(0.4, Math.min(4.0, Number(durationSec) || 1.0));
+  const outFfmpeg = toFfmpegPath(outWavPath);
+  if (hasValidAudioFile(outWavPath, 200)) return;
+  try {
+    await runCmd(
+      `ffmpeg -y -f lavfi -i "anullsrc=r=44100:cl=stereo" -t ${sec.toFixed(2)} -c:a pcm_s16le "${outFfmpeg}"`,
+      timeoutMs
+    );
+  } catch {
+    if (!hasValidAudioFile(outWavPath, 200)) {
+      const sampleRate = 44100;
+      const numChannels = 2;
+      const bitsPerSample = 16;
+      const numSamples = Math.max(1, Math.round(sampleRate * sec));
+      const dataSize = numSamples * numChannels * (bitsPerSample / 8);
+      const buf = Buffer.alloc(44 + dataSize);
+      buf.write('RIFF', 0);
+      buf.writeUInt32LE(36 + dataSize, 4);
+      buf.write('WAVE', 8);
+      buf.write('fmt ', 12);
+      buf.writeUInt32LE(16, 16);
+      buf.writeUInt16LE(1, 20);
+      buf.writeUInt16LE(numChannels, 22);
+      buf.writeUInt32LE(sampleRate, 24);
+      buf.writeUInt32LE(sampleRate * numChannels * (bitsPerSample / 8), 28);
+      buf.writeUInt16LE(numChannels * (bitsPerSample / 8), 32);
+      buf.writeUInt16LE(bitsPerSample, 34);
+      buf.write('data', 36);
+      buf.writeUInt32LE(dataSize, 40);
+      fs.writeFileSync(outWavPath, buf);
+    }
+  }
+}
+
 async function synthesizeSingleSegmentWav(
   seg,
   voiceId,
@@ -446,7 +481,7 @@ async function synthesizeSingleSegmentWav(
       const tempoChain = buildTempoChain(normalizeSpeechTempo(speechSpeed));
       await runCmd(
         `ffmpeg -y -i "${toFfmpegPath(customVoicePath)}" -af "${tempoChain},atrim=0:${maxAllowedSec.toFixed(2)},asetpts=PTS-STARTPTS" -ar 44100 -ac 2 "${fittedFfmpeg}"`,
-        6000
+        15000
       );
     } else {
       const ttsMp3 = path.join(segDir, 'tts_out.mp3');
@@ -455,20 +490,18 @@ async function synthesizeSingleSegmentWav(
         const audioFilter = buildVoiceFilter(voiceId, speechSpeed, pitchShift, styleMode);
         await runCmd(
           `ffmpeg -y -i "${toFfmpegPath(ttsMp3)}" -af "${audioFilter},atrim=0:${maxAllowedSec.toFixed(2)},asetpts=PTS-STARTPTS" -ar 44100 -ac 2 "${fittedFfmpeg}"`,
-          6000
+          15000
         );
       } else {
-        await runCmd(
-          `ffmpeg -y -f lavfi -i "anullsrc=r=44100:cl=stereo" -t ${fallbackSec.toFixed(2)} "${fittedFfmpeg}"`,
-          4000
-        );
+        await createSilentWavFile(fittedWav, fallbackSec, 15000);
       }
     }
   } catch {
-    await runCmd(
-      `ffmpeg -y -f lavfi -i "anullsrc=r=44100:cl=stereo" -t ${fallbackSec.toFixed(2)} "${fittedFfmpeg}"`,
-      4000
-    );
+    await createSilentWavFile(fittedWav, fallbackSec, 15000);
+  }
+
+  if (!hasValidAudioFile(fittedWav, 200)) {
+    await createSilentWavFile(fittedWav, fallbackSec, 15000);
   }
 
   const rawDurSec = await getMediaDurationSec(fittedWav);
@@ -544,14 +577,14 @@ async function buildOnTimeTtsAudioAndSubEvents(
 
     await runCmd(
       `ffmpeg -y -f concat -safe 0 -i "${toFfmpegPath(listPath)}" -af "apad=whole_dur=${totalSec}" -t ${totalSec} -c:a libmp3lame -q:a 9 "${finalMp3Ffmpeg}"`,
-      20000
+      35000
     );
     return { syncedSubEvents, effectiveTotalSec: totalSec };
   }
 
   await runCmd(
     `ffmpeg -y -f lavfi -i "anullsrc=r=44100:cl=stereo" -t ${totalSec} -c:a libmp3lame -q:a 9 "${finalMp3Ffmpeg}"`,
-    10000
+    20000
   );
   return { syncedSubEvents: [], effectiveTotalSec: totalSec };
 }
@@ -690,7 +723,7 @@ async function muxPlayableMp4Fast(
     try {
       await runCmd(
         `ffmpeg -y -i "${inFfmpeg}" -i "${audFfmpeg}" -map 0:v:0 -map 1:a:0 -t ${dur} -c:v copy -c:a aac -b:a 128k -ar 44100 -ac 2 -movflags +faststart "${outFfmpeg}"`,
-        20000
+        30000
       );
       const checkFast = await probeMediaStreams(outputPath);
       if (checkFast.hasVideoStream && checkFast.hasAudioStream && checkFast.sizeBytes > 1024) {
@@ -713,7 +746,7 @@ async function muxPlayableMp4Fast(
     );
     await runCmd(
       `ffmpeg -y -i "${inFfmpeg}" -i "${audFfmpeg}" -vf "${vfFull}" -map 0:v:0 -map 1:a:0 -t ${dur} -c:v libx264 -preset veryfast -crf 28 -threads 0 -c:a aac -b:a 128k -ar 44100 -ac 2 -movflags +faststart "${outFfmpeg}"`,
-      35000
+      50000
     );
     const check1 = await probeMediaStreams(outputPath);
     if (check1.hasVideoStream && check1.hasAudioStream && check1.sizeBytes > 1024) {
@@ -725,7 +758,7 @@ async function muxPlayableMp4Fast(
 
   await runCmd(
     `ffmpeg -y -i "${inFfmpeg}" -i "${audFfmpeg}" -map 0:v:0 -map 1:a:0 -t ${dur} -c:v copy -c:a aac -b:a 128k -ar 44100 -ac 2 -movflags +faststart "${outFfmpeg}"`,
-    20000
+    30000
   );
   return { subBurned: false, blurApplied: false, streamCopied: true, warnings };
 }

@@ -27,7 +27,7 @@ function getApiBase() {
   }
   if (typeof window !== 'undefined') {
     const { origin, hostname, port } = window.location;
-    if (port === '5173') {
+    if (port === '5173' || port === '5174') {
       return `http://${hostname || 'localhost'}:4567`;
     }
     return origin;
@@ -70,6 +70,7 @@ function uploadWithProgress(
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', url, true);
+    xhr.timeout = 180000;
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
     xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
 
@@ -93,6 +94,7 @@ function uploadWithProgress(
     };
 
     xhr.onerror = () => reject(new Error('Network error during upload'));
+    xhr.ontimeout = () => reject(new Error('Upload timed out'));
     xhr.onabort = () => reject(new Error('Upload cancelled'));
 
     if (signal) {
@@ -161,7 +163,7 @@ export default function App() {
       }
     };
     checkHealth();
-    const timer = setInterval(checkHealth, 8000);
+    const timer = setInterval(checkHealth, 6000);
     return () => {
       active = false;
       clearInterval(timer);
@@ -293,6 +295,7 @@ export default function App() {
       if (d.ok) {
         setVideoFile(d.fileName);
         setUploadProgress(100);
+        setRunnerOnline(true);
         setStatusText(`Video Ready (${d.sizeMB} MB)။ အခု ထုတ်မည် ခလုတ်ကို နှိပ်ပါ။`);
       } else {
         setIsError(true);
@@ -339,6 +342,7 @@ export default function App() {
         setCustomVoiceFile(d.fileName);
         setGender('custom');
         setVoiceProgress(100);
+        setRunnerOnline(true);
         setStatusText(`ကိုယ်ပိုင်အသံ Ready (${d.fileName})။ အခု ထုတ်မည် ခလုတ်ကို နှိပ်ပါ။`);
       } else {
         setIsError(true);
