@@ -4,8 +4,14 @@ import fs from 'fs';
 import path from 'path';
 
 const PORT = Number(process.env.PORT || 4567);
-const MAX_VIDEO_BYTES = 1024 * 1024 * 1024;
+const HOST = process.env.HOST || '0.0.0.0';
+const MAX_VIDEO_BYTES = 1024 * 1024 * 1024; // 1GB
 const DEFAULT_SPEECH_TEMPO = 0.94;
+const DEFAULT_GENDER = 'male';
+const DEFAULT_PITCH = 0;
+const DEFAULT_LANG = 'my';
+const TTS_CONCURRENCY = 28;
+const TRANSLATE_CONCURRENCY = 28;
 
 function normalizeSpeechTempo(rawSpeed) {
   const num = Number(rawSpeed);
@@ -13,12 +19,23 @@ function normalizeSpeechTempo(rawSpeed) {
   return Number(Math.max(0.7, Math.min(1.35, num)).toFixed(2));
 }
 
+function normalizePitchShift(rawPitch) {
+  const num = Number(rawPitch);
+  if (!Number.isFinite(num)) return DEFAULT_PITCH;
+  return Math.max(-12, Math.min(12, Math.round(num)));
+}
+
+function normalizeLanguage(rawLang) {
+  const l = String(rawLang || DEFAULT_LANG).toLowerCase().trim();
+  return l === 'en' || l === 'english' ? 'en' : 'my';
+}
+
 const workspaceDir = path.resolve(process.cwd(), 'workspace');
 const uploadsDir = path.join(workspaceDir, 'uploads');
-const voicesDir = path.join(workspaceDir, 'voices');
 const distDir = path.resolve(process.cwd(), 'dist');
 fs.mkdirSync(uploadsDir, { recursive: true });
-fs.mkdirSync(voicesDir, { recursive: true });
+
+const translationCache = new Map();
 
 function toFfmpegPath(p) {
   return path.resolve(p).replace(/\\/g, '/');
@@ -38,13 +55,13 @@ function getBackendOrigin(req) {
   return `http://localhost:${PORT}`;
 }
 
-function cleanupOldWorkspaceFiles(maxAgeMs = 30 * 60 * 1000) {
+function cleanupOldWorkspaceFiles(maxAgeMs = 15 * 60 * 1000) {
   const now = Date.now();
-  for (const dir of [workspaceDir, uploadsDir, voicesDir]) {
+  for (const dir of [workspaceDir, uploadsDir]) {
     try {
       if (!fs.existsSync(dir)) continue;
       for (const entry of fs.readdirSync(dir)) {
-        if (entry === 'uploads' || entry === 'voices') continue;
+        if (entry === 'uploads') continue;
         const full = path.join(dir, entry);
         const st = fs.statSync(full);
         if (now - st.mtimeMs > maxAgeMs) {
@@ -52,19 +69,19 @@ function cleanupOldWorkspaceFiles(maxAgeMs = 30 * 60 * 1000) {
         }
       }
     } catch {
-      // Ignore cleanup errors
+      // Ignore
     }
   }
 }
 
 setInterval(() => cleanupOldWorkspaceFiles(), 10 * 60 * 1000);
 
-function runCmd(cmd) {
+function runCmd(cmd, timeoutMs = 45000) {
   return new Promise((resolve, reject) => {
-    exec(cmd, { maxBuffer: 1024 * 1024 * 350 }, (err, stdout, stderr) => {
+    exec(cmd, { maxBuffer: 1024 * 1024 * 128, timeout: timeoutMs }, (err, stdout, stderr) => {
       if (err) {
         const msg = (stderr || err.message || 'Command failed').trim();
-        console.error('[KKH CMD ERROR]', msg.slice(-500));
+        console.error('[KKH CMD ERROR]', msg.slice(-200));
         return reject(new Error(msg));
       }
       resolve({ stdout, stderr });
@@ -72,9 +89,23 @@ function runCmd(cmd) {
   });
 }
 
-function hasValidAudioFile(filePath, minBytes = 400) {
+function hasValidAudioFile(filePath, minBytes = 250) {
   try {
     return fs.existsSync(filePath) && fs.statSync(filePath).size >= minBytes;
+  } catch {
+    return false;
+  }
+}
+
+async function hasAudioStream(filePath) {
+  if (!hasValidAudioFile(filePath, 250)) return false;
+  try {
+    const fp = toFfmpegPath(filePath);
+    const { stdout } = await runCmd(
+      `ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1 "${fp}"`,
+      3000
+    );
+    return stdout.trim().includes('audio');
   } catch {
     return false;
   }
@@ -84,19 +115,9 @@ async function getMediaDurationSec(filePath) {
   const fp = toFfmpegPath(filePath);
   try {
     const cmd = `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${fp}"`;
-    const { stdout } = await runCmd(cmd);
+    const { stdout } = await runCmd(cmd, 3000);
     const val = parseFloat(stdout.trim());
     if (!Number.isNaN(val) && val > 0.05) return val;
-  } catch {
-    // Fallback
-  }
-  try {
-    const cmd2 = `ffprobe -v error -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 "${fp}"`;
-    const { stdout } = await runCmd(cmd2);
-    for (const line of stdout.trim().split(/\r?\n/)) {
-      const val = parseFloat(line.trim());
-      if (!Number.isNaN(val) && val > 0.05) return val;
-    }
   } catch {
     // Fallback
   }
@@ -107,7 +128,7 @@ async function getVideoDimensions(filePath) {
   const fp = toFfmpegPath(filePath);
   try {
     const cmd = `ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "${fp}"`;
-    const { stdout } = await runCmd(cmd);
+    const { stdout } = await runCmd(cmd, 3000);
     const parts = stdout.trim().split('x').map((n) => parseInt(n, 10));
     if (parts.length === 2 && parts[0] > 0 && parts[1] > 0) {
       return { width: parts[0], height: parts[1] };
@@ -146,7 +167,8 @@ async function probeMediaStreams(filePath) {
   try {
     const fp = toFfmpegPath(filePath);
     const { stdout } = await runCmd(
-      `ffprobe -v error -show_entries stream=codec_type,codec_name,width,height -of json "${fp}"`
+      `ffprobe -v error -show_entries stream=codec_type,codec_name,width,height -of json "${fp}"`,
+      3000
     );
     const parsed = JSON.parse(stdout || '{}');
     const streams = Array.isArray(parsed.streams) ? parsed.streams : [];
@@ -169,284 +191,348 @@ async function probeMediaStreams(filePath) {
   return info;
 }
 
-async function translateAnyLanguageToBurmese(text) {
-  const clean = (text || '').trim().replace(/\s+/g, ' ');
-  if (!clean) return '';
-  if (/[\u1000-\u109F]/.test(clean)) return clean;
+async function runWithConcurrency(items, limit, workerFn) {
+  const results = new Array(items.length);
+  let idx = 0;
 
-  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=my&dt=t&q=${encodeURIComponent(clean.slice(0, 1500))}`;
-  try {
-    const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-    });
-    if (res.ok) {
+  async function next() {
+    const current = idx++;
+    if (current >= items.length) return;
+    results[current] = await workerFn(items[current], current);
+    await next();
+  }
+
+  const runners = Array.from({ length: Math.min(limit, items.length) }, () => next());
+  await Promise.all(runners);
+  return results;
+}
+
+function makeNaturalConversationalBurmese(rawBurmese, styleMode = 'pro_recap') {
+  let s = (rawBurmese || '').replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+
+  s = s
+    .replace(/\bသည်\b/g, 'တယ်')
+    .replace(/\bဖြစ်သည်\b/g, 'ဖြစ်တယ်')
+    .replace(/\bရှိသည်\b/g, 'ရှိတယ်')
+    .replace(/\bသွားသည်\b/g, 'သွားတယ်')
+    .replace(/\bလာသည်\b/g, 'လာတယ်')
+    .replace(/\bပြောသည်\b/g, 'ပြောတယ်')
+    .replace(/\bလုပ်သည်\b/g, 'လုပ်တယ်')
+    .replace(/\bမည်ဖြစ်သည်\b/g, 'မှာပါ')
+    .replace(/\bမည်\b(?=$|[။၊.!?\s])/g, 'မှာ')
+    .replace(/([။၊])/g, '$1 ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (styleMode === 'pro_recap') {
+    s = s.replace(/\s*([.!?]+)\s*/g, '$1 ');
+  }
+
+  return s.trim();
+}
+
+async function translateSingleChunk(chunkText, targetLang = 'my', styleMode = 'pro_recap') {
+  const clean = (chunkText || '').trim().replace(/\s+/g, ' ');
+  if (!clean) return '';
+
+  const lang = normalizeLanguage(targetLang);
+  const hasMyanmar = /[\u1000-\u109F]/.test(clean);
+  const isMostlyAscii = /^[A-Za-z0-9\s.,!?;:'"()\-]+$/.test(clean);
+
+  if (lang === 'my' && hasMyanmar && !isMostlyAscii) {
+    return makeNaturalConversationalBurmese(clean, styleMode);
+  }
+  if (lang === 'en' && isMostlyAscii && !hasMyanmar) {
+    return clean;
+  }
+
+  const cacheKey = `${lang}:${styleMode}:${clean.slice(0, 1200)}`;
+  if (translationCache.has(cacheKey)) {
+    return translationCache.get(cacheKey);
+  }
+
+  const endpoints = [
+    `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${lang}&dt=t&q=${encodeURIComponent(clean)}`,
+    `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=${lang}&q=${encodeURIComponent(clean)}`
+  ];
+
+  for (const url of endpoints) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 1400);
+    try {
+      const res = await fetch(url, {
+        signal: controller.signal,
+        headers: { 'User-Agent': 'Mozilla/5.0' }
+      });
+      if (!res.ok) continue;
       const data = await res.json();
-      if (Array.isArray(data) && Array.isArray(data[0])) {
-        const translated = data[0]
+
+      let translated = '';
+      if (Array.isArray(data?.[0])) {
+        translated = data[0]
           .map((item) => (Array.isArray(item) && typeof item[0] === 'string' ? item[0] : ''))
           .join('')
           .trim();
-        if (translated) return translated;
+      } else if (Array.isArray(data)) {
+        translated = data
+          .map((item) => (Array.isArray(item) ? item[0] : typeof item === 'string' ? item : ''))
+          .filter(Boolean)
+          .join(' ')
+          .trim();
       }
+
+      if (translated) {
+        const result = lang === 'my' ? makeNaturalConversationalBurmese(translated, styleMode) : translated;
+        translationCache.set(cacheKey, result);
+        return result;
+      }
+    } catch {
+      // Next
+    } finally {
+      clearTimeout(timer);
     }
-  } catch {
-    // Fallback
   }
-  return clean;
+
+  return lang === 'my' ? makeNaturalConversationalBurmese(clean, styleMode) : clean;
 }
 
-function splitLinesForFullCoverage(text, durationSec) {
-  const clean = (text || '').trim().replace(/\s+/g, ' ');
-  const defaultLines = [
-    'ဇာတ်လမ်းစတင်ပါပြီ။ မြန်မာဘာသာဖြင့် အစအဆုံး တင်ဆက်နေပါသည်။',
-    'ဒီအခန်းမှာ ဖြစ်ပျက်နေတဲ့ အကြောင်းအရာကို ဆက်ကြည့်ရအောင်ပါ။',
-    'ဆက်လက်ပြီး အဓိက အချက်အလက်တွေကို ကြည့်ရှုရမှာပါ။',
-    'ဒီအပိုင်းမှာတော့ ဇာတ်လမ်းကို အဆုံးသတ်လိုက်ပါပြီ။'
-  ];
+async function prepareOnTimeSegments(manualText, durationSec, targetLang = 'my', styleMode = 'pro_recap') {
+  const raw = (manualText || '').trim();
+  if (!raw) return [];
 
-  const rawSentences = clean
-    ? clean
-        .split(/(?<=[.!?。！？။၊।])\s+/)
-        .map((s) => s.trim())
-        .filter(Boolean)
-    : defaultLines;
+  const rawUnits = raw
+    .split(/\r?\n|(?<=[.!?。！？။၊।])\s*/)
+    .map((l) => l.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
 
-  const lines = [];
-  for (const sentence of rawSentences) {
-    if (sentence.length <= 75) {
-      lines.push(sentence);
+  const groupedChunks = [];
+  for (const unit of rawUnits) {
+    if (unit.length <= 165) {
+      groupedChunks.push(unit);
     } else {
-      const words = sentence.split(' ');
-      let cur = '';
-      for (const w of words) {
-        if ((cur + ' ' + w).trim().length > 72 && cur.trim()) {
-          lines.push(cur.trim());
-          cur = w;
-        } else {
-          cur = (cur + ' ' + w).trim();
-        }
+      for (let i = 0; i < unit.length; i += 155) {
+        const part = unit.slice(i, i + 155).trim();
+        if (part) groupedChunks.push(part);
       }
-      if (cur.trim()) lines.push(cur.trim());
     }
   }
 
-  const total = Math.max(3, durationSec);
-  const count = Math.max(1, lines.length);
-  const slotSec = Math.max(1.8, total / count);
+  const spokenLines = await runWithConcurrency(groupedChunks, TRANSLATE_CONCURRENCY, async (chunk) =>
+    translateSingleChunk(chunk, targetLang, styleMode)
+  );
 
-  return lines.map((line, idx) => {
+  const total = Math.max(2, durationSec);
+  const count = Math.max(1, spokenLines.length);
+  const slotSec = total / count;
+
+  return spokenLines.map((line, idx) => {
     const startSec = Number((idx * slotSec).toFixed(2));
-    const endSec = Number(Math.max(startSec + 1.6, (idx + 1) * slotSec).toFixed(2));
+    const endSec = Number(Math.min(total, startSec + Math.max(0.75, slotSec * 0.96)).toFixed(2));
     return {
       index: idx,
-      startSec,
+      targetStartSec: startSec,
       endSec,
-      availSec: Math.max(1.6, endSec - startSec),
+      availSec: Math.max(0.65, endSec - startSec),
       spokenText: line
     };
   });
 }
 
-async function prepareBurmeseLinesForFullCoverage(text, durationSec) {
-  const rawInput = (text || '').trim();
-  if (!rawInput) return splitLinesForFullCoverage('', durationSec);
-
-  const rawChunks = rawInput
-    .split(/(?<=[.!?。！？။၊।\n])\s+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  const translatedChunks = [];
-  for (const chunk of rawChunks) {
-    const myChunk = await translateAnyLanguageToBurmese(chunk);
-    if (myChunk) translatedChunks.push(myChunk);
-  }
-  return splitLinesForFullCoverage(translatedChunks.join(' '), durationSec);
-}
-
-async function fetchGoogleBurmeseTtsMp3(text, outMp3Path) {
-  const snippet = (text || 'မင်္ဂလာပါ ဇာတ်လမ်းကို နားဆင်ပါ').trim().slice(0, 190);
+async function fetchGoogleTtsMp3(text, lang = 'my', outMp3Path) {
+  const tl = normalizeLanguage(lang);
+  const snippet = (text || '...').trim().slice(0, 195);
   const endpoints = [
-    `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(snippet)}&tl=my&client=tw-ob`,
-    `https://translate.googleapis.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(snippet)}&tl=my&client=gtx`
+    `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(snippet)}&tl=${tl}&client=tw-ob`,
+    `https://translate.googleapis.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(snippet)}&tl=${tl}&client=gtx`
   ];
   for (const url of endpoints) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 1400);
     try {
       const res = await fetch(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+        signal: controller.signal,
+        headers: { 'User-Agent': 'Mozilla/5.0' }
       });
       if (!res.ok) continue;
       const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length >= 400) {
+      if (buf.length >= 250) {
         fs.writeFileSync(outMp3Path, buf);
-        return true;
+        if (await hasAudioStream(outMp3Path)) {
+          return true;
+        }
+        fs.rmSync(outMp3Path, { force: true });
       }
     } catch {
       // Next
+    } finally {
+      clearTimeout(timer);
     }
   }
   return false;
 }
 
-async function synthesizeTtsVoiceToWav(text, voiceId, segDir, outWavPath) {
-  const isMale = voiceId === 'male';
-  const primaryVoice = isMale ? 'my-MM-ThihaNeural' : 'my-MM-NilarNeural';
-  const backupVoice = isMale ? 'my-MM-NilarNeural' : 'my-MM-ThihaNeural';
+function clampAtempoValue(val) {
+  const num = Number(val) || 1.0;
+  if (num < 0.5) return 0.5;
+  if (num > 2.0) return 2.0;
+  return Number(num.toFixed(4));
+}
 
-  const safeText = (text || 'ဇာတ်လမ်းကို မြန်မာဘာသာဖြင့် နားဆင်နေပါသည်။')
+function buildTempoChain(tempoVal) {
+  const safe = Math.max(0.25, Math.min(4.0, Number(tempoVal) || 1.0));
+  if (safe >= 0.5 && safe <= 2.0) {
+    return `atempo=${clampAtempoValue(safe)}`;
+  }
+  if (safe < 0.5) {
+    const first = 0.5;
+    const second = clampAtempoValue(safe / first);
+    return `atempo=${first},atempo=${second}`;
+  }
+  const first = 2.0;
+  const second = clampAtempoValue(safe / first);
+  return `atempo=${first},atempo=${second}`;
+}
+
+function buildVoiceFilter(voiceId, speechSpeed, pitchShift, styleMode = 'pro_recap') {
+  const normalizedId = String(voiceId || DEFAULT_GENDER).toLowerCase();
+  const isFemale = normalizedId === 'female' || normalizedId === 'nilar';
+  const userPitch = normalizePitchShift(pitchShift);
+
+  const baseSemitones = isFemale ? 2.5 : -3.5;
+  const totalSemitones = baseSemitones + userPitch;
+  const pitchFactor = Number(Math.pow(2, totalSemitones / 12).toFixed(4));
+  const safePitch = Math.max(0.55, Math.min(1.6, pitchFactor));
+
+  const tempo = normalizeSpeechTempo(
+    styleMode === 'pro_recap' ? Math.min(1.35, Number(speechSpeed || 1.0) * 1.03) : speechSpeed
+  );
+
+  const shiftedRate = Math.round(24000 * safePitch);
+  const tempoChain = buildTempoChain(tempo / safePitch);
+
+  const eqChain = isFemale
+    ? 'highpass=f=170,equalizer=f=2600:width_type=o:w=1.3:g=3.5,acompressor=threshold=-16dB:ratio=2.4:attack=10:release=100'
+    : 'highpass=f=80,equalizer=f=130:width_type=o:w=1.4:g=5.0,lowpass=f=5200,acompressor=threshold=-16dB:ratio=2.4:attack=10:release=100';
+
+  const outputGain = isFemale ? 1.85 : 2.1;
+
+  return `aresample=24000,asetrate=${shiftedRate},aresample=44100,${tempoChain},${eqChain},volume=${outputGain}`;
+}
+
+async function synthesizeSingleSegmentWav(
+  seg,
+  voiceId,
+  targetLang,
+  segDir,
+  speechSpeed,
+  pitchShift,
+  styleMode,
+  customVoicePath = ''
+) {
+  const safeText = (seg.spokenText || '...')
     .replace(/"/g, "'")
     .replace(/\r?\n/g, ' ')
     .trim()
-    .slice(0, 500);
+    .slice(0, 600);
 
-  const rawVoiceWav = path.join(segDir, 'raw_voice.wav');
-  const rawVoiceFfmpeg = toFfmpegPath(rawVoiceWav);
-  const outWavFfmpeg = toFfmpegPath(outWavPath);
-  let synthesized = false;
+  const fittedWav = path.join(segDir, 'fitted.wav');
+  const fittedFfmpeg = toFfmpegPath(fittedWav);
+  const maxAllowedSec = Math.max(0.65, Number(seg.availSec) || 1.2);
+  const fallbackSec = Math.max(0.6, Math.min(1.2, maxAllowedSec));
 
-  const utf8TextFile = path.join(segDir, 'burmese_line.txt');
-  fs.writeFileSync(utf8TextFile, safeText, 'utf-8');
-  const utf8TextFfmpeg = toFfmpegPath(utf8TextFile);
-
-  for (const pyBin of ['python3', 'python', 'py']) {
-    try {
-      const mp3Tmp = path.join(segDir, `edge_primary_${pyBin}.mp3`);
-      const mp3TmpFfmpeg = toFfmpegPath(mp3Tmp);
-      const pitchArg = isMale ? '--pitch="-4Hz" --rate="-4%"' : '--rate="-4%"';
-      await runCmd(`${pyBin} -m edge_tts --voice "${primaryVoice}" ${pitchArg} --file "${utf8TextFfmpeg}" --write-media "${mp3TmpFfmpeg}"`);
-      if (hasValidAudioFile(mp3Tmp, 500)) {
-        const maleEq = isMale
-          ? 'bass=g=4:f=140:w=0.6,treble=g=2:f=3200:w=0.6,volume=1.85'
-          : 'treble=g=2:f=3500:w=0.6,volume=1.8';
-        await runCmd(`ffmpeg -y -i "${mp3TmpFfmpeg}" -af "aresample=44100,${maleEq}" -ar 44100 -ac 2 "${rawVoiceFfmpeg}"`);
-        if (hasValidAudioFile(rawVoiceWav, 800)) {
-          synthesized = true;
-          break;
-        }
-      }
-    } catch {
-      // Try next python binary
-    }
-  }
-
-  if (!synthesized) {
-    for (const pyBin of ['python3', 'python', 'py']) {
-      try {
-        const mp3Backup = path.join(segDir, `edge_backup_${pyBin}.mp3`);
-        const mp3BackupFfmpeg = toFfmpegPath(mp3Backup);
-        await runCmd(`${pyBin} -m edge_tts --voice "${backupVoice}" --file "${utf8TextFfmpeg}" --write-media "${mp3BackupFfmpeg}"`);
-        if (hasValidAudioFile(mp3Backup, 500)) {
-          const shapeFilter = isMale
-            ? 'asetrate=44100*0.83,aresample=44100,atempo=1.18,bass=g=5:f=130:w=0.6,volume=1.85'
-            : 'aresample=44100,volume=1.8';
-          await runCmd(`ffmpeg -y -i "${mp3BackupFfmpeg}" -af "${shapeFilter}" -ar 44100 -ac 2 "${rawVoiceFfmpeg}"`);
-          if (hasValidAudioFile(rawVoiceWav, 800)) {
-            synthesized = true;
-            break;
-          }
-        }
-      } catch {
-        // Try next
+  try {
+    if (String(voiceId).toLowerCase() === 'custom' && customVoicePath && (await hasAudioStream(customVoicePath))) {
+      const tempoChain = buildTempoChain(normalizeSpeechTempo(speechSpeed));
+      await runCmd(
+        `ffmpeg -y -i "${toFfmpegPath(customVoicePath)}" -af "${tempoChain},atrim=0:${maxAllowedSec.toFixed(2)},asetpts=PTS-STARTPTS" -ar 44100 -ac 2 "${fittedFfmpeg}"`,
+        6000
+      );
+    } else {
+      const ttsMp3 = path.join(segDir, 'tts_out.mp3');
+      const okTts = await fetchGoogleTtsMp3(safeText, targetLang, ttsMp3);
+      if (okTts && (await hasAudioStream(ttsMp3))) {
+        const audioFilter = buildVoiceFilter(voiceId, speechSpeed, pitchShift, styleMode);
+        await runCmd(
+          `ffmpeg -y -i "${toFfmpegPath(ttsMp3)}" -af "${audioFilter},atrim=0:${maxAllowedSec.toFixed(2)},asetpts=PTS-STARTPTS" -ar 44100 -ac 2 "${fittedFfmpeg}"`,
+          6000
+        );
+      } else {
+        await runCmd(
+          `ffmpeg -y -f lavfi -i "anullsrc=r=44100:cl=stereo" -t ${fallbackSec.toFixed(2)} "${fittedFfmpeg}"`,
+          4000
+        );
       }
     }
-  }
-
-  if (!synthesized) {
-    try {
-      const gttsMp3 = path.join(segDir, 'google_my.mp3');
-      const gttsMp3Ffmpeg = toFfmpegPath(gttsMp3);
-      const okGtts = await fetchGoogleBurmeseTtsMp3(safeText, gttsMp3);
-      if (okGtts && hasValidAudioFile(gttsMp3, 500)) {
-        const shapeFilter = isMale
-          ? 'asetrate=44100*0.83,aresample=44100,atempo=1.18,bass=g=5:f=130:w=0.6,volume=1.85'
-          : 'aresample=44100,volume=1.8';
-        await runCmd(`ffmpeg -y -i "${gttsMp3Ffmpeg}" -af "${shapeFilter}" -ar 44100 -ac 2 "${rawVoiceFfmpeg}"`);
-        if (hasValidAudioFile(rawVoiceWav, 800)) {
-          synthesized = true;
-        }
-      }
-    } catch {
-      // Fallback
-    }
-  }
-
-  if (!synthesized) {
-    const baseFreq = isMale ? 145 : 240;
+  } catch {
     await runCmd(
-      `ffmpeg -y -f lavfi -i "sine=frequency=${baseFreq}:sample_rate=44100:duration=1.6" -af "afade=t=in:st=0:d=0.2,afade=t=out:st=1.2:d=0.4,lowpass=f=850,volume=0.4" -ar 44100 -ac 2 "${rawVoiceFfmpeg}"`
+      `ffmpeg -y -f lavfi -i "anullsrc=r=44100:cl=stereo" -t ${fallbackSec.toFixed(2)} "${fittedFfmpeg}"`,
+      4000
     );
   }
 
-  try {
-    await runCmd(`ffmpeg -y -i "${rawVoiceFfmpeg}" -af "highpass=f=75,lowpass=f=12000,loudnorm=I=-14:TP=-1.0:LRA=11" -ar 44100 -ac 2 "${outWavFfmpeg}"`);
-  } catch {
-    await runCmd(`ffmpeg -y -i "${rawVoiceFfmpeg}" -ar 44100 -ac 2 "${outWavFfmpeg}"`);
-  }
+  const rawDurSec = await getMediaDurationSec(fittedWav);
+  return { fittedWav, durMs: Math.max(250, Math.round((rawDurSec || fallbackSec) * 1000)) };
 }
 
-function buildAtempoChain(tempo) {
-  const safe = normalizeSpeechTempo(tempo);
-  if (safe >= 0.5 && safe <= 2.0) {
-    return `atempo=${safe.toFixed(2)}`;
-  }
-  return `atempo=${DEFAULT_SPEECH_TEMPO}`;
-}
-
-async function applySpeechSpeed(rawWavPath, fittedWavPath, speed) {
-  const tempoChain = buildAtempoChain(speed);
-  await runCmd(`ffmpeg -y -i "${toFfmpegPath(rawWavPath)}" -af "${tempoChain},volume=1.65" -ar 44100 -ac 2 "${toFfmpegPath(fittedWavPath)}"`);
-}
-
-async function buildSyncedTtsAudioAndSubEvents(segments, voiceId, durationSec, tempDir, finalMp3Path, speechSpeed = DEFAULT_SPEECH_TEMPO) {
+async function buildOnTimeTtsAudioAndSubEvents(
+  segments,
+  voiceId,
+  targetLang,
+  durationSec,
+  tempDir,
+  finalMp3Path,
+  speechSpeed = DEFAULT_SPEECH_TEMPO,
+  pitchShift = DEFAULT_PITCH,
+  styleMode = 'pro_recap',
+  customVoicePath = ''
+) {
   const totalSec = Math.max(2, Math.ceil(durationSec));
-  const syncedSubEvents = [];
-  const concatEntries = [];
   const segRoot = path.join(tempDir, 'segments');
   fs.mkdirSync(segRoot, { recursive: true });
-  let cursorMs = 0;
 
-  const allSegments = (segments || []).slice(0, 120);
-  for (let i = 0; i < allSegments.length; i++) {
-    const seg = allSegments[i];
+  const allSegments = segments || [];
+  const synthResults = await runWithConcurrency(allSegments, TTS_CONCURRENCY, async (seg, i) => {
     const segDir = path.join(segRoot, `s_${i}`);
     fs.mkdirSync(segDir, { recursive: true });
-    const clearWav = path.join(segDir, 'clear.wav');
-    const fittedWav = path.join(segDir, 'fitted.wav');
-    await synthesizeTtsVoiceToWav(seg.spokenText, voiceId, segDir, clearWav);
+    return synthesizeSingleSegmentWav(
+      seg,
+      voiceId,
+      targetLang,
+      segDir,
+      speechSpeed,
+      pitchShift,
+      styleMode,
+      customVoicePath
+    );
+  });
 
-    if (hasValidAudioFile(clearWav, 300)) {
-      await applySpeechSpeed(clearWav, fittedWav, speechSpeed);
-      if (hasValidAudioFile(fittedWav, 300)) {
-        const fittedDurSec = await getMediaDurationSec(fittedWav);
-        const fittedDurMs = Math.max(400, Math.round(fittedDurSec * 1000));
-        const desiredStartMs = i === 0 ? 150 : Math.max(cursorMs + 180, Math.round(seg.startSec * 1000));
-        const gapMs = Math.max(120, desiredStartMs - cursorMs);
+  const syncedSubEvents = [];
+  const concatEntries = [];
+  let cursorMs = 0;
 
-        if (gapMs > 20) {
-          const gapWav = path.join(segDir, 'gap.wav');
-          const gapSec = (gapMs / 1000).toFixed(3);
-          await runCmd(`ffmpeg -y -f lavfi -i "anullsrc=r=44100:cl=stereo" -t ${gapSec} "${toFfmpegPath(gapWav)}"`);
-          if (hasValidAudioFile(gapWav, 200)) {
-            concatEntries.push(gapWav);
-            cursorMs += gapMs;
-          }
-        }
+  for (let i = 0; i < allSegments.length; i++) {
+    const seg = allSegments[i];
+    const item = synthResults[i];
+    if (!item || !hasValidAudioFile(item.fittedWav, 200)) continue;
 
-        const startSecVal = Number((cursorMs / 1000).toFixed(2));
-        cursorMs += fittedDurMs;
-        const endSecVal = Number(((cursorMs + 150) / 1000).toFixed(2));
-
-        concatEntries.push(fittedWav);
-        syncedSubEvents.push({
-          startSec: startSecVal,
-          endSec: endSecVal,
-          spokenText: seg.spokenText
-        });
-      }
+    const targetStartMs = Math.max(0, Math.round((seg.targetStartSec || 0) * 1000));
+    if (targetStartMs > cursorMs) {
+      cursorMs = targetStartMs;
     }
+
+    const startSecVal = Number((cursorMs / 1000).toFixed(2));
+    cursorMs += item.durMs;
+    const endSecVal = Number((cursorMs / 1000).toFixed(2));
+
+    concatEntries.push(item.fittedWav);
+    syncedSubEvents.push({
+      startSec: startSecVal,
+      endSec: endSecVal,
+      spokenText: seg.spokenText
+    });
   }
 
-  const effectiveTotalSec = Math.max(totalSec, Math.ceil(cursorMs / 1000) + 1);
   const finalMp3Ffmpeg = toFfmpegPath(finalMp3Path);
 
   if (concatEntries.length > 0) {
@@ -456,55 +542,35 @@ async function buildSyncedTtsAudioAndSubEvents(segments, voiceId, durationSec, t
       .join('\n');
     fs.writeFileSync(listPath, listContent, 'utf-8');
 
-    try {
-      await runCmd(
-        `ffmpeg -y -f concat -safe 0 -i "${toFfmpegPath(listPath)}" -af "highpass=f=75,volume=1.6,apad=whole_dur=${effectiveTotalSec}" -t ${effectiveTotalSec} -c:a libmp3lame -q:a 2 "${finalMp3Ffmpeg}"`
-      );
-      if (hasValidAudioFile(finalMp3Path, 600)) {
-        return { syncedSubEvents, effectiveTotalSec };
-      }
-    } catch {
-      // Fallback
-    }
+    await runCmd(
+      `ffmpeg -y -f concat -safe 0 -i "${toFfmpegPath(listPath)}" -af "apad=whole_dur=${totalSec}" -t ${totalSec} -c:a libmp3lame -q:a 9 "${finalMp3Ffmpeg}"`,
+      20000
+    );
+    return { syncedSubEvents, effectiveTotalSec: totalSec };
   }
 
-  const singleWav = path.join(tempDir, 'direct_tts.wav');
-  const singleWavFfmpeg = toFfmpegPath(singleWav);
-  const fullText = allSegments.map((s) => s.spokenText).join(' ') || 'မင်္ဂလာပါ ဇာတ်လမ်းကို နားဆင်ပါ။';
-  await synthesizeTtsVoiceToWav(fullText, voiceId, tempDir, singleWav);
-  const singleDur = await getMediaDurationSec(singleWav);
-  const finalDur = Math.max(effectiveTotalSec, Math.ceil(singleDur) + 1);
   await runCmd(
-    `ffmpeg -y -i "${singleWavFfmpeg}" -af "apad=whole_dur=${finalDur},loudnorm=I=-14:TP=-1.0:LRA=11" -t ${finalDur} -c:a libmp3lame -q:a 2 "${finalMp3Ffmpeg}"`
+    `ffmpeg -y -f lavfi -i "anullsrc=r=44100:cl=stereo" -t ${totalSec} -c:a libmp3lame -q:a 9 "${finalMp3Ffmpeg}"`,
+    10000
   );
-  return {
-    syncedSubEvents: allSegments.map((s) => ({ startSec: s.startSec, endSec: s.endSec, spokenText: s.spokenText })),
-    effectiveTotalSec: finalDur
-  };
+  return { syncedSubEvents: [], effectiveTotalSec: totalSec };
 }
 
-function sanitizeForDrawtext(str) {
-  return (str || '')
-    .replace(/[\\:'\[\]%\r\n]/g, ' ')
-    .replace(/"/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function findBurmeseFontFile() {
-  const candidates = [
+function findFontFile(targetLang = 'my') {
+  const myCandidates = [
     'C:/Windows/Fonts/Pyidaungsu-2.5.3_Regular.ttf',
     'C:/Windows/Fonts/mmrtext.ttf',
-    'C:/Windows/Fonts/Pyidaungsu-2.5.3_Bold.ttf',
-    'C:/Windows/Fonts/mmrtextb.ttf',
-    'C:/Windows/Fonts/mm3.ttf',
-    'C:/Windows/Fonts/Myanmar3.ttf',
-    'C:/Windows/Fonts/pyidaungsu.ttf',
     'C:/Windows/Fonts/NotoSansMyanmar-Regular.ttf',
     'C:/Windows/Fonts/padauk.ttf',
     '/usr/share/fonts/truetype/noto/NotoSansMyanmar-Regular.ttf',
     '/usr/share/fonts/truetype/padauk/Padauk.ttf'
   ];
+  const enCandidates = [
+    'C:/Windows/Fonts/arial.ttf',
+    'C:/Windows/Fonts/segoeui.ttf',
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
+  ];
+  const candidates = normalizeLanguage(targetLang) === 'en' ? [...enCandidates, ...myCandidates] : myCandidates;
   for (const p of candidates) {
     try {
       if (fs.existsSync(p) && fs.statSync(p).size > 10000) return p;
@@ -529,208 +595,145 @@ function formatSrtTime(sec) {
   return `${pad(hours)}:${pad(mins)}:${pad(secs)},${pad(ms, 3)}`;
 }
 
-function writeBurmeseSrtFile(syncedSubEvents, srtPath) {
+function writeSrtFile(syncedSubEvents, srtPath) {
   const blocks = [];
   let idx = 1;
   for (const ev of syncedSubEvents || []) {
     const text = (ev.spokenText || '').replace(/\r?\n/g, ' ').trim();
     if (!text) continue;
     const s = formatSrtTime(ev.startSec);
-    const e = formatSrtTime(Math.max((Number(ev.startSec) || 0) + 0.6, Number(ev.endSec) || 1.5));
+    const e = formatSrtTime(Math.max((Number(ev.startSec) || 0) + 0.5, Number(ev.endSec) || 1.2));
     blocks.push(`${idx}\n${s} --> ${e}\n${text}\n`);
     idx += 1;
   }
   fs.writeFileSync(srtPath, blocks.join('\n'), 'utf-8');
 }
 
-function buildBlurAndBottomSubFilter(
-  syncedSubEvents,
+function buildFastVideoFilter(
   srtPath,
   videoWidth,
   videoHeight,
-  totalDurationSec,
   blurOriginalSub,
   blurArea,
-  includeSubtitles = true
+  targetLang = 'my',
+  burnSubtitles = true
 ) {
   const w = Math.max(360, videoWidth || 1280);
   const h = Math.max(360, videoHeight || 720);
   const isPortrait = h > w;
-  const dur = Math.max(1, Number(totalDurationSec) || 10);
-  const rawFont = findBurmeseFontFile();
-  const escapedFont = escapeFilterPath(rawFont);
-  const fontParam = rawFont ? `fontfile='${escapedFont}':` : '';
+  const rawFont = findFontFile(targetLang);
 
-  const tagFontSize = isPortrait ? Math.max(12, Math.round(h * 0.014)) : Math.max(13, Math.round(h * 0.017));
-  const tagX = `w-tw-${Math.max(14, Math.round(w * 0.025))}`;
-  const tagY = `h-th-${Math.max(10, Math.round(h * 0.014))}`;
-
-  const bandH = Math.max(38, Math.round(h * 0.12));
-  const bandW = Math.max(180, Math.min(w, Math.round(w * 0.86)));
-  const bandX = Math.max(0, Math.round((w - bandW) / 2));
-  const bottomY = Math.max(0, Math.min(h - bandH, h - bandH - Math.round(h * 0.02)));
-  const topY = Math.max(0, Math.min(h - bandH, Math.round(h * 0.04)));
-
-  const graph = [];
-  let curLabel = '[v0]';
-  graph.push(`[0:v]scale=trunc(iw/2)*2:trunc(ih/2)*2${curLabel}`);
+  const filters = [];
+  if (w > 1280) {
+    filters.push('scale=1280:-2');
+  }
 
   if (blurOriginalSub) {
-    let idx = 0;
+    const bandH = Math.max(36, Math.round(h * 0.11));
+    const bandW = Math.max(180, Math.min(w, Math.round(w * 0.86)));
+    const bandX = Math.max(0, Math.round((w - bandW) / 2));
+    const bottomY = Math.max(0, Math.min(h - bandH, h - bandH - Math.round(h * 0.02)));
+    const topY = Math.max(0, Math.min(h - bandH, Math.round(h * 0.04)));
+
     if (blurArea === 'top' || blurArea === 'both') {
-      const nextLabel = `[vblur${idx}]`;
-      graph.push(
-        `${curLabel}split[s${idx}a][s${idx}b];` +
-          `[s${idx}b]crop=${bandW}:${bandH}:${bandX}:${topY},gblur=sigma=12[bl${idx}];` +
-          `[s${idx}a][bl${idx}]overlay=${bandX}:${topY}${nextLabel}`
-      );
-      curLabel = nextLabel;
-      idx += 1;
+      filters.push(`drawbox=x=${bandX}:y=${topY}:w=${bandW}:h=${bandH}:color=black@0.65:t=fill`);
     }
     if (blurArea === 'bottom' || blurArea === 'both' || !blurArea) {
-      const nextLabel = `[vblur${idx}]`;
-      graph.push(
-        `${curLabel}split[s${idx}a][s${idx}b];` +
-          `[s${idx}b]crop=${bandW}:${bandH}:${bandX}:${bottomY},gblur=sigma=12[bl${idx}];` +
-          `[s${idx}a][bl${idx}]overlay=${bandX}:${bottomY}${nextLabel}`
-      );
-      curLabel = nextLabel;
-      idx += 1;
+      filters.push(`drawbox=x=${bandX}:y=${bottomY}:w=${bandW}:h=${bandH}:color=black@0.65:t=fill`);
     }
   }
 
-  const afterBlur = [];
-  if (includeSubtitles && srtPath && fs.existsSync(srtPath)) {
-    const subFontSize = isPortrait ? Math.max(17, Math.round(h * 0.022)) : Math.max(19, Math.round(h * 0.027));
-    const marginV = Math.max(20, Math.round(h * 0.032));
+  if (burnSubtitles && srtPath && fs.existsSync(srtPath)) {
+    const subFontSize = isPortrait ? 18 : 22;
+    const marginV = 24;
     const escapedSrt = escapeFilterPath(srtPath);
-    const fontName = rawFont.toLowerCase().includes('pyidaungsu')
-      ? 'Pyidaungsu'
-      : rawFont.toLowerCase().includes('mmrtext')
-      ? 'Myanmar Text'
-      : 'Noto Sans Myanmar';
-    afterBlur.push(
-      `subtitles='${escapedSrt}':force_style='FontName=${fontName},FontSize=${subFontSize},PrimaryColour=&H00FFFFFF,OutlineColour=&H99000000,BorderStyle=1,Outline=2,Shadow=1,Alignment=2,MarginV=${marginV}'`
+    const fontName =
+      normalizeLanguage(targetLang) === 'en'
+        ? 'Arial'
+        : rawFont.toLowerCase().includes('pyidaungsu')
+        ? 'Pyidaungsu'
+        : rawFont.toLowerCase().includes('mmrtext')
+        ? 'Myanmar Text'
+        : 'Noto Sans Myanmar';
+    filters.push(
+      `subtitles='${escapedSrt}':force_style='FontName=${fontName},FontSize=${subFontSize},PrimaryColour=&H00FFFFFF,OutlineColour=&H99000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=${marginV}'`
     );
-  } else if (includeSubtitles) {
-    const subFontSize = isPortrait ? Math.max(18, Math.round(h * 0.022)) : Math.max(20, Math.round(h * 0.028));
-    const subY = `h-th-${Math.max(22, Math.round(h * 0.032))}`;
-    for (const ev of (syncedSubEvents || []).slice(0, 30)) {
-      const s = Math.max(0, Number(ev.startSec) || 0).toFixed(2);
-      const e = Math.max(Number(s) + 0.4, Number(ev.endSec) || Number(s) + 1.5).toFixed(2);
-      const txt = sanitizeForDrawtext(ev.spokenText).slice(0, 100);
-      if (!txt) continue;
-      afterBlur.push(
-        `drawtext=${fontParam}text='${txt}':fontcolor=white:fontsize=${subFontSize}:borderw=2:bordercolor=black@0.85:x=(w-text_w)/2:y=${subY}:enable='between(t,${s},${e})'`
-      );
-    }
   }
 
-  afterBlur.push(
-    `drawtext=${fontParam}text='KKH TOOL':fontcolor=white@0.4:fontsize=${tagFontSize}:x=${tagX}:y=${tagY}:enable='between(t,0,${dur})'`
-  );
-  afterBlur.push('format=yuv420p[vout]');
-
-  graph.push(`${curLabel}${afterBlur.join(',')}`);
-  return graph.join(';');
+  filters.push('format=yuv420p');
+  return filters.join(',');
 }
 
-async function ensureGuaranteedAudioFile(voiceMp3, totalDurationSec, outputDir) {
-  const dur = Math.max(2, Math.ceil(Number(totalDurationSec) || 10));
-  const guaranteedWav = path.join(outputDir, `guaranteed_audio_${Date.now()}.wav`);
-  const guaranteedWavFfmpeg = toFfmpegPath(guaranteedWav);
-
-  if (hasValidAudioFile(voiceMp3, 400)) {
-    const aDur = await getMediaDurationSec(voiceMp3);
-    if (aDur > 0.2) {
-      try {
-        await runCmd(
-          `ffmpeg -y -i "${toFfmpegPath(voiceMp3)}" -af "apad=whole_dur=${dur},loudnorm=I=-14:TP=-1.0:LRA=11" -t ${dur} -ar 44100 -ac 2 "${guaranteedWavFfmpeg}"`
-        );
-        if (hasValidAudioFile(guaranteedWav, 800)) return guaranteedWav;
-      } catch {
-        // Fallback
-      }
-    }
-  }
-
-  await runCmd(
-    `ffmpeg -y -f lavfi -i "sine=frequency=220:sample_rate=44100:duration=${dur}" -f lavfi -i "sine=frequency=330:sample_rate=44100:duration=${dur}" -filter_complex "[0:a][1:a]amix=inputs=2:weights=0.6 0.25,lowpass=f=850,volume=0.35,afade=t=in:st=0:d=0.4,afade=t=out:st=${Math.max(0, dur - 0.6)}:d=0.5[outa]" -map "[outa]" -ar 44100 -ac 2 "${guaranteedWavFfmpeg}"`
-  );
-  return guaranteedWav;
-}
-
-async function muxPlayableMp4WithBlurAndBottomSub(
+async function muxPlayableMp4Fast(
   inputPath,
   voiceMp3,
-  syncedSubEvents,
   srtPath,
   width,
   height,
   totalDurationSec,
   blurOriginalSub,
   blurArea,
+  targetLang,
+  burnSubtitles,
   outputPath
 ) {
   const dur = Math.max(1, Number(totalDurationSec) || 10);
-  const workSubDir = path.dirname(outputPath);
-  const audioSource = await ensureGuaranteedAudioFile(voiceMp3, dur, workSubDir);
   const inFfmpeg = toFfmpegPath(inputPath);
-  const audFfmpeg = toFfmpegPath(audioSource);
+  const audFfmpeg = toFfmpegPath(voiceMp3);
   const outFfmpeg = toFfmpegPath(outputPath);
   const warnings = [];
 
+  const hasSubsFile = Boolean(srtPath && fs.existsSync(srtPath) && fs.statSync(srtPath).size > 10);
+  const shouldBurn = Boolean(burnSubtitles) && hasSubsFile;
+
+  if (!blurOriginalSub && !shouldBurn) {
+    try {
+      await runCmd(
+        `ffmpeg -y -i "${inFfmpeg}" -i "${audFfmpeg}" -map 0:v:0 -map 1:a:0 -t ${dur} -c:v copy -c:a aac -b:a 128k -ar 44100 -ac 2 -movflags +faststart "${outFfmpeg}"`,
+        20000
+      );
+      const checkFast = await probeMediaStreams(outputPath);
+      if (checkFast.hasVideoStream && checkFast.hasAudioStream && checkFast.sizeBytes > 1024) {
+        return { subBurned: false, blurApplied: false, streamCopied: true, warnings };
+      }
+    } catch (err) {
+      warnings.push(`Copy fallback: ${err.message.slice(-120)}`);
+    }
+  }
+
   try {
-    const fcFull = buildBlurAndBottomSubFilter(
-      syncedSubEvents,
+    const vfFull = buildFastVideoFilter(
       srtPath,
       width,
       height,
-      dur,
       blurOriginalSub,
       blurArea,
-      true
+      targetLang,
+      shouldBurn
     );
-    const cmdFull = `ffmpeg -y -i "${inFfmpeg}" -i "${audFfmpeg}" -filter_complex "${fcFull}" -map "[vout]" -map 1:a:0 -t ${dur} -c:v libx264 -preset veryfast -crf 22 -c:a aac -b:a 192k -ar 44100 -ac 2 -movflags +faststart "${outFfmpeg}"`;
-    await runCmd(cmdFull);
+    await runCmd(
+      `ffmpeg -y -i "${inFfmpeg}" -i "${audFfmpeg}" -vf "${vfFull}" -map 0:v:0 -map 1:a:0 -t ${dur} -c:v libx264 -preset veryfast -crf 28 -threads 0 -c:a aac -b:a 128k -ar 44100 -ac 2 -movflags +faststart "${outFfmpeg}"`,
+      35000
+    );
     const check1 = await probeMediaStreams(outputPath);
     if (check1.hasVideoStream && check1.hasAudioStream && check1.sizeBytes > 1024) {
-      fs.rmSync(audioSource, { force: true });
-      return { subBurned: true, blurApplied: Boolean(blurOriginalSub), warnings };
+      return { subBurned: shouldBurn, blurApplied: Boolean(blurOriginalSub), streamCopied: false, warnings };
     }
   } catch (err) {
-    warnings.push(`Blur+SRT fallback: ${err.message.slice(-140)}`);
+    warnings.push(`Fast filter fallback: ${err.message.slice(-120)}`);
   }
 
-  try {
-    const fcNoSrt = buildBlurAndBottomSubFilter(
-      [],
-      '',
-      width,
-      height,
-      dur,
-      blurOriginalSub,
-      blurArea,
-      false
-    );
-    const cmdNoSrt = `ffmpeg -y -i "${inFfmpeg}" -i "${audFfmpeg}" -filter_complex "${fcNoSrt}" -map "[vout]" -map 1:a:0 -t ${dur} -c:v libx264 -preset veryfast -crf 22 -c:a aac -b:a 192k -ar 44100 -ac 2 -movflags +faststart "${outFfmpeg}"`;
-    await runCmd(cmdNoSrt);
-    const check2 = await probeMediaStreams(outputPath);
-    if (check2.hasVideoStream && check2.hasAudioStream && check2.sizeBytes > 1024) {
-      fs.rmSync(audioSource, { force: true });
-      return { subBurned: false, blurApplied: Boolean(blurOriginalSub), warnings };
-    }
-  } catch (err) {
-    warnings.push(`Blur+Tag fallback: ${err.message.slice(-140)}`);
-  }
-
-  const cmdSafe = `ffmpeg -y -i "${inFfmpeg}" -i "${audFfmpeg}" -map 0:v:0 -map 1:a:0 -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" -t ${dur} -c:v libx264 -preset veryfast -crf 22 -c:a aac -b:a 192k -ar 44100 -ac 2 -movflags +faststart "${outFfmpeg}"`;
-  await runCmd(cmdSafe);
-  fs.rmSync(audioSource, { force: true });
-  return { subBurned: false, blurApplied: false, warnings };
+  await runCmd(
+    `ffmpeg -y -i "${inFfmpeg}" -i "${audFfmpeg}" -map 0:v:0 -map 1:a:0 -t ${dur} -c:v copy -c:a aac -b:a 128k -ar 44100 -ac 2 -movflags +faststart "${outFfmpeg}"`,
+    20000
+  );
+  return { subBurned: false, blurApplied: false, streamCopied: true, warnings };
 }
 
 const server = http.createServer((req, res) => {
+  server.requestTimeout = 0;
+  server.headersTimeout = 0;
+
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-File-Name, Range');
@@ -741,15 +744,17 @@ const server = http.createServer((req, res) => {
     return res.end();
   }
 
-  if (req.method === 'GET' && req.url && req.url.startsWith('/health')) {
+  const reqPath = (req.url || '/').split('?')[0];
+
+  if (req.method === 'GET' && (reqPath === '/health' || reqPath === '/api/health')) {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-    return res.end(JSON.stringify({ ok: true, studio: 'KKH AI STUDIO', status: 'READY', speechSpeed: DEFAULT_SPEECH_TEMPO }));
+    return res.end(JSON.stringify({ ok: true, studio: 'KKH AI STUDIO', status: 'READY' }));
   }
 
-  if (req.method === 'GET' && req.url && req.url.startsWith('/output/')) {
+  if (req.method === 'GET' && req.url && (req.url.startsWith('/output/') || req.url.startsWith('/api/output/'))) {
     const reqUrl = new URL(req.url, `http://localhost:${PORT}`);
-    const fileParam = reqUrl.searchParams.get('file') || req.url.replace('/output/', '');
-    const safeName = path.basename(decodeURIComponent(fileParam));
+    const rawFile = reqUrl.searchParams.get('file') || req.url.replace(/^\/(api\/)?output\//, '');
+    const safeName = path.basename(decodeURIComponent(rawFile));
     const filePath = path.join(workspaceDir, safeName);
 
     if (!fs.existsSync(filePath)) {
@@ -784,19 +789,19 @@ const server = http.createServer((req, res) => {
         'Content-Range': `bytes ${start}-${end}/${stat.size}`,
         'Content-Length': chunkSize
       });
-      fs.createReadStream(filePath, { start, end }).pipe(res);
+      fs.createReadStream(filePath, { start, end, highWaterMark: 4 * 1024 * 1024 }).pipe(res);
     } else {
       res.writeHead(200, headers);
-      fs.createReadStream(filePath).pipe(res);
+      fs.createReadStream(filePath, { highWaterMark: 4 * 1024 * 1024 }).pipe(res);
     }
     return;
   }
 
-  if (req.method === 'POST' && req.url === '/upload-video') {
+  if (req.method === 'POST' && (reqPath === '/upload-video' || reqPath === '/api/upload-video')) {
     const rawName = decodeURIComponent(req.headers['x-file-name'] || 'uploaded_video.mp4');
     const safeName = path.basename(rawName).replace(/[^a-zA-Z0-9._-]/g, '_');
     const destPath = path.join(uploadsDir, safeName);
-    const writeStream = fs.createWriteStream(destPath);
+    const writeStream = fs.createWriteStream(destPath, { highWaterMark: 16 * 1024 * 1024 });
     let totalBytes = 0;
     let aborted = false;
 
@@ -808,11 +813,16 @@ const server = http.createServer((req, res) => {
         writeStream.destroy();
         fs.rm(destPath, { force: true }, () => {});
         res.writeHead(413, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: 'Video size 1GB ထက် ကျော်နေပါသည်။' }));
+        res.end(JSON.stringify({ ok: false, error: '1GB (1024MB) ထက် ကျော်နေပါသည်။' }));
         req.destroy();
         return;
       }
-      writeStream.write(chunk);
+      if (!writeStream.write(chunk)) {
+        req.pause();
+        writeStream.once('drain', () => {
+          if (!aborted) req.resume();
+        });
+      }
     });
 
     req.on('end', () => {
@@ -831,31 +841,22 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.method === 'POST' && req.url === '/upload-voice') {
-    const rawName = decodeURIComponent(req.headers['x-file-name'] || 'my_voice.wav');
+  if (req.method === 'POST' && (reqPath === '/upload-voice' || reqPath === '/api/upload-voice')) {
+    const rawName = decodeURIComponent(req.headers['x-file-name'] || 'custom_voice.mp3');
     const safeName = path.basename(rawName).replace(/[^a-zA-Z0-9._-]/g, '_');
-    const destPath = path.join(voicesDir, safeName);
-    const writeStream = fs.createWriteStream(destPath);
+    const destPath = path.join(uploadsDir, safeName);
+    const writeStream = fs.createWriteStream(destPath, { highWaterMark: 8 * 1024 * 1024 });
     let totalBytes = 0;
-    let aborted = false;
 
     req.on('data', (chunk) => {
-      if (aborted) return;
       totalBytes += chunk.length;
-      if (totalBytes > 50 * 1024 * 1024) {
-        aborted = true;
-        writeStream.destroy();
-        fs.rm(destPath, { force: true }, () => {});
-        res.writeHead(413, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: 'Voice file 50MB ထက် ကျော်နေပါသည်။' }));
-        req.destroy();
-        return;
+      if (!writeStream.write(chunk)) {
+        req.pause();
+        writeStream.once('drain', () => req.resume());
       }
-      writeStream.write(chunk);
     });
 
     req.on('end', () => {
-      if (aborted) return;
       writeStream.end(() => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, fileName: safeName, sizeMB: Number((totalBytes / (1024 * 1024)).toFixed(2)) }));
@@ -863,26 +864,30 @@ const server = http.createServer((req, res) => {
     });
 
     writeStream.on('error', (err) => {
-      if (aborted) return;
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: err.message }));
     });
     return;
   }
 
-  if (req.method === 'POST' && req.url === '/dub-full-video') {
+  if (req.method === 'POST' && (reqPath === '/dub-full-video' || reqPath === '/api/dub-full-video')) {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', async () => {
       try {
         const {
           videoFile = 'input.mp4',
-          gender = 'male',
+          gender = DEFAULT_GENDER,
+          voiceProfile = '',
+          voiceStyle = 'pro_recap',
+          language = DEFAULT_LANG,
           manualText = '',
           customVoiceFile = '',
-          blurOriginalSub = true,
+          burnSubtitles = false,
+          blurOriginalSub = false,
           blurArea = 'bottom',
-          voiceSpeed = DEFAULT_SPEECH_TEMPO
+          voiceSpeed = DEFAULT_SPEECH_TEMPO,
+          pitchShift = DEFAULT_PITCH
         } = JSON.parse(body || '{}');
 
         const safeName = path.basename(videoFile);
@@ -898,7 +903,7 @@ const server = http.createServer((req, res) => {
         const inputAudit = await probeMediaStreams(inputPath);
         if (inputAudit.sizeBytes > MAX_VIDEO_BYTES) {
           res.writeHead(413, { 'Content-Type': 'application/json' });
-          return res.end(JSON.stringify({ ok: false, error: 'Video size 1GB ထက် ကျော်နေပါသည်။' }));
+          return res.end(JSON.stringify({ ok: false, error: '1GB (1024MB) ထက် ကျော်နေပါသည်။' }));
         }
         if (!inputAudit.hasVideoStream || inputAudit.sizeBytes < 512) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -908,84 +913,73 @@ const server = http.createServer((req, res) => {
           }));
         }
 
+        const rawVoiceChoice = String(voiceProfile || gender || DEFAULT_GENDER).toLowerCase();
+        const chosenVoice =
+          rawVoiceChoice === 'custom'
+            ? 'custom'
+            : rawVoiceChoice === 'female' || rawVoiceChoice === 'nilar'
+            ? 'female'
+            : 'male';
+        const voiceNameTag =
+          chosenVoice === 'custom' ? 'CUSTOM' : chosenVoice === 'female' ? 'NILAR' : 'THIHA';
+        const appliedStyle = String(voiceStyle || 'pro_recap').toLowerCase() === 'pro_recap' ? 'pro_recap' : 'conversational';
+        const appliedLang = normalizeLanguage(language);
         const appliedTempo = normalizeSpeechTempo(voiceSpeed);
-        const customVoiceCandidate = customVoiceFile ? path.join(voicesDir, path.basename(customVoiceFile)) : '';
-        const hasCustomVoice = Boolean(customVoiceCandidate && hasValidAudioFile(customVoiceCandidate, 300));
+        const appliedPitch = normalizePitchShift(pitchShift);
+        const shouldBurnSubtitles = Boolean(burnSubtitles);
+
+        let customVoicePath = '';
+        if (chosenVoice === 'custom' && customVoiceFile) {
+          const safeVoiceName = path.basename(customVoiceFile);
+          const vUpload = path.join(uploadsDir, safeVoiceName);
+          const vWork = path.join(workspaceDir, safeVoiceName);
+          if (fs.existsSync(vUpload)) customVoicePath = vUpload;
+          else if (fs.existsSync(vWork)) customVoicePath = vWork;
+        }
+
         const videoDur = await getVideoDurationSec(inputPath);
-        const customVoiceDur = hasCustomVoice ? await getMediaDurationSec(customVoiceCandidate) : 0;
         const durationSec = Math.max(3, videoDur);
 
         const { width, height } = await getVideoDimensions(inputPath);
         const tempDir = fs.mkdtempSync(path.join(workspaceDir, 'tmp_dub_'));
 
-        let effectiveInputText = (manualText || '').trim();
-        if (!effectiveInputText && hasCustomVoice) {
-          effectiveInputText = [
-            'ဇာတ်လမ်းကို မြန်မာဘာသာဖြင့် အစအဆုံး တင်ဆက်နေပါသည်။',
-            'ဒီအခန်းမှာ ဖြစ်ပျက်နေတဲ့ အကြောင်းအရာကို ဆက်ကြည့်ရအောင်ပါ။',
-            'ဆက်လက်ပြီး အဓိက အချက်အလက်တွေကို ကြည့်ရှုရမှာပါ။',
-            'ဒီအပိုင်းမှာတော့ ဇာတ်လမ်းကို အဆုံးသတ်လိုက်ပါပြီ။'
-          ].join(' ');
-        }
+        const timedSegments = await prepareOnTimeSegments(manualText, durationSec, appliedLang, appliedStyle);
+        const voiceMp3 = path.join(tempDir, `synced_tts_${appliedLang}.mp3`);
 
-        const timedSegments = await prepareBurmeseLinesForFullCoverage(effectiveInputText, durationSec);
-        const voiceMp3 = path.join(tempDir, 'synced_tts_burmese.mp3');
-        let syncedSubEvents;
-        let finalDurationSec = durationSec;
+        const built = await buildOnTimeTtsAudioAndSubEvents(
+          timedSegments,
+          chosenVoice,
+          appliedLang,
+          durationSec,
+          tempDir,
+          voiceMp3,
+          appliedTempo,
+          appliedPitch,
+          appliedStyle,
+          customVoicePath
+        );
+        const syncedSubEvents = built.syncedSubEvents;
+        const finalDurationSec = Math.max(durationSec, built.effectiveTotalSec);
 
-        if (hasCustomVoice) {
-          const normalizedUserWav = path.join(tempDir, 'user_voice_norm.wav');
-          const tempoChain = buildAtempoChain(appliedTempo);
-          await runCmd(
-            `ffmpeg -y -i "${toFfmpegPath(customVoiceCandidate)}" -af "${tempoChain},highpass=f=80,lowpass=f=12000,loudnorm=I=-14:TP=-1.0:LRA=11" -ar 44100 -ac 2 "${toFfmpegPath(normalizedUserWav)}"`
-          );
-          const totalCeil = Math.max(3, Math.ceil(durationSec));
-          if (customVoiceDur > 0.2 && customVoiceDur < totalCeil - 0.5) {
-            const loopCount = Math.max(1, Math.ceil(totalCeil / Math.max(0.5, customVoiceDur)));
-            await runCmd(
-              `ffmpeg -y -stream_loop ${loopCount} -i "${toFfmpegPath(normalizedUserWav)}" -af "afade=t=in:st=0:d=0.15,loudnorm=I=-14:TP=-1.0:LRA=11" -t ${totalCeil} -c:a libmp3lame -q:a 2 "${toFfmpegPath(voiceMp3)}"`
-            );
-          } else {
-            await runCmd(
-              `ffmpeg -y -i "${toFfmpegPath(normalizedUserWav)}" -af "loudnorm=I=-14:TP=-1.0:LRA=11,apad=whole_dur=${totalCeil}" -t ${totalCeil} -c:a libmp3lame -q:a 2 "${toFfmpegPath(voiceMp3)}"`
-            );
-          }
-          syncedSubEvents = timedSegments.map((s) => ({
-            startSec: s.startSec,
-            endSec: s.endSec,
-            spokenText: s.spokenText
-          }));
-        } else {
-          const built = await buildSyncedTtsAudioAndSubEvents(
-            timedSegments,
-            gender,
-            durationSec,
-            tempDir,
-            voiceMp3,
-            appliedTempo
-          );
-          syncedSubEvents = built.syncedSubEvents;
-          finalDurationSec = Math.max(durationSec, built.effectiveTotalSec);
-        }
+        const srtPath = path.join(tempDir, 'synced_subs.srt');
+        writeSrtFile(syncedSubEvents, srtPath);
 
-        const srtPath = path.join(tempDir, 'burmese_subs.srt');
-        writeBurmeseSrtFile(syncedSubEvents, srtPath);
-
-        const fullBurmeseScript = syncedSubEvents.map((s) => `[${s.startSec}s-${s.endSec}s] ${s.spokenText}`).join('\n');
+        const fullScriptOutput = syncedSubEvents.map((s) => `[${s.startSec}s-${s.endSec}s] ${s.spokenText}`).join('\n');
         const base = safeName.replace(/\.[^/.]+$/, '');
-        const outputFileName = `${base}_KKH_SUB_${gender.toUpperCase()}_${Date.now()}.mp4`;
+        const outputFileName = `${base}_KKH_${voiceNameTag}_${appliedLang.toUpperCase()}_${Date.now()}.mp4`;
         const outputPath = path.join(workspaceDir, outputFileName);
 
-        const { subBurned, blurApplied, warnings } = await muxPlayableMp4WithBlurAndBottomSub(
+        const { subBurned, blurApplied, streamCopied, warnings } = await muxPlayableMp4Fast(
           inputPath,
           voiceMp3,
-          syncedSubEvents,
           srtPath,
           width,
           height,
           finalDurationSec,
           blurOriginalSub,
           blurArea,
+          appliedLang,
+          shouldBurnSubtitles,
           outputPath
         );
         const outAudit = await probeMediaStreams(outputPath);
@@ -995,13 +989,9 @@ const server = http.createServer((req, res) => {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           return res.end(JSON.stringify({
             ok: false,
-            error: 'ထွက်လာသော Video ဖိုင် ပျက်နေပါသည်။ ဖိုင်အရွယ်အစား သို့မဟုတ် စာသားကို လျှော့ပြီး ထပ်စမ်းပါ။',
+            error: 'ထွက်လာသော Video ဖိုင် ပျက်နေပါသည်။ ထပ်စမ်းကြည့်ပါ။',
             warnings
           }));
-        }
-
-        if (!outAudit.hasAudioStream) {
-          warnings.push('Audio stream မတွေ့ပါ။');
         }
 
         const origin = getBackendOrigin(req);
@@ -1012,17 +1002,29 @@ const server = http.createServer((req, res) => {
           hasAudio: outAudit.hasAudioStream,
           subBurned,
           blurApplied,
+          streamCopied,
+          burnSubtitles: shouldBurnSubtitles,
+          language: appliedLang,
+          voiceStyle: appliedStyle,
           speechSpeed: appliedTempo,
+          pitchShift: appliedPitch,
           streamUrl: `${origin}/output/${encodeURIComponent(outputFileName)}`,
           downloadUrl: `${origin}/output/${encodeURIComponent(outputFileName)}?download=1`,
-          burmeseText: fullBurmeseScript,
+          burmeseText: fullScriptOutput,
           segmentsCount: syncedSubEvents.length,
-          gender,
+          voiceName: voiceNameTag,
+          gender: chosenVoice,
           audit: {
             ...outAudit,
             subBurned,
             blurApplied,
-            speechSpeed: appliedTempo
+            streamCopied,
+            burnSubtitles: shouldBurnSubtitles,
+            language: appliedLang,
+            voiceStyle: appliedStyle,
+            speechSpeed: appliedTempo,
+            pitchShift: appliedPitch,
+            voiceName: voiceNameTag
           },
           warnings
         }));
@@ -1064,6 +1066,6 @@ const server = http.createServer((req, res) => {
   res.end('Not Found');
 });
 
-server.listen(PORT, () => {
-  console.log(`[KKH AI STUDIO] Running on http://localhost:${PORT} (v27: Voice Speed Slider + Removed Unmute Button)`);
+server.listen(PORT, HOST, () => {
+  console.log(`[KKH AI STUDIO] Running on http://localhost:${PORT} (${HOST})`);
 });
