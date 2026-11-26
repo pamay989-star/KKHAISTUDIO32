@@ -51,7 +51,7 @@ export default function App() {
   const [blurEnabled, setBlurEnabled] = useState<boolean>(true);
   const [subPosition, setSubPosition] = useState<SubPosition>("bottom");
   const [voiceChoice, setVoiceChoice] = useState<VoiceChoice>("male");
-  const [voiceSpeed, setVoiceSpeed] = useState<number>(0.94);
+  const [voiceSpeed, setVoiceSpeed] = useState<number>(1.0);
   const [customVoiceFile, setCustomVoiceFile] = useState<string>("");
   const [voiceLabel, setVoiceLabel] = useState<string>("");
   const [scriptText, setScriptText] = useState<string>("");
@@ -212,7 +212,7 @@ export default function App() {
     setOutputUrl("");
     setDownloadUrl("");
     setSubtitleText("");
-    setStatusText("အသံ + စာတန်း ထုတ်နေပါသည်...");
+    setStatusText("မြန်မာပြန် + အသံ + စာတန်း ထုတ်နေပါသည်...");
 
     try {
       const { res, data: d, usedPath } = await fetchWithRouteFallback(
@@ -274,7 +274,6 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[radial-gradient(ellipse_at_top,_#251348_0%,_#0d0818_55%,_#07040e_100%)] text-[#F6F3FF] px-4 py-7 flex justify-center selection:bg-fuchsia-500/30">
       <div className="w-full max-w-md space-y-4">
-        {/* Header Card */}
         <header className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#231342]/90 via-[#170d2e]/90 to-[#110922]/90 border border-violet-400/25 p-4 shadow-[0_12px_35px_-10px_rgba(139,92,246,0.45)] backdrop-blur-xl">
           <div className="flex items-start justify-between gap-3">
             <div>
@@ -300,25 +299,24 @@ export default function App() {
                 KKH AI STUDIO
               </h1>
               <p className="text-xs text-violet-200/75 mt-0.5">
-                မြန်မာစကားပြော + အောက်ခြေမြန်မာစာတန်း အလိုအလျောက်ထုတ်စက်
+                30m Video + မူလစာတန်းဝါး + မြန်မာပြန် + စာအကြိုက်ထည့်
               </p>
             </div>
             <span className="shrink-0 text-[11px] font-bold px-2.5 py-1 rounded-lg bg-violet-500/20 text-violet-200 border border-violet-400/30">
-              KKH 
+              KKH
             </span>
           </div>
         </header>
 
-        {/* Step 1: Video Upload */}
         <section className="rounded-2xl bg-[#160d29]/85 border border-violet-500/20 p-4 space-y-2.5 shadow-lg backdrop-blur-md">
           <div className="flex items-center justify-between">
             <label className="text-sm font-semibold text-violet-100 flex items-center gap-2">
               <span className="w-5 h-5 rounded-md bg-violet-500/25 border border-violet-400/30 text-[11px] font-bold flex items-center justify-center text-violet-200">
                 1
               </span>
-              <span>Video ထည့်ရန်</span>
+              <span>Video ထည့်ရန် (30m+)</span>
             </label>
-            <span className="text-[11px] text-violet-300/70">Max 1GB</span>
+            <span className="text-[11px] text-violet-300/70">Max 2GB</span>
           </div>
 
           <input
@@ -361,7 +359,6 @@ export default function App() {
           </button>
         </section>
 
-        {/* Step 2: Blur Original Subtitle */}
         <section className="rounded-2xl bg-[#160d29]/85 border border-violet-500/20 p-4 space-y-3 shadow-lg backdrop-blur-md">
           <div className="flex items-center justify-between">
             <span className="text-sm font-semibold text-violet-100 flex items-center gap-2">
@@ -414,7 +411,6 @@ export default function App() {
           </div>
         </section>
 
-        {/* Step 3: Voice & Speed */}
         <section className="rounded-2xl bg-[#160d29]/85 border border-violet-500/20 p-4 space-y-3.5 shadow-lg backdrop-blur-md">
           <div className="text-sm font-semibold text-violet-100 flex items-center gap-2">
             <span className="w-5 h-5 rounded-md bg-violet-500/25 border border-violet-400/30 text-[11px] font-bold flex items-center justify-center text-violet-200">
@@ -480,7 +476,7 @@ export default function App() {
             <input
               type="range"
               min={0.7}
-              max={1.3}
+              max={1.4}
               step={0.01}
               value={voiceSpeed}
               onChange={(e) => setVoiceSpeed(parseFloat(e.target.value))}
@@ -490,72 +486,62 @@ export default function App() {
             <div className="grid grid-cols-3 gap-2 text-xs">
               <button
                 type="button"
-                onClick={() => setVoiceSpeed(0.8)}
-                className={`py-1.5 rounded-lg border font-medium transition ${
-                  Math.abs(voiceSpeed - 0.8) < 0.01
-                    ? "bg-violet-500/30 border-violet-300/50 text-white"
-                    : "bg-[#20123b]/70 border-violet-500/20 text-violet-200/80 hover:bg-[#29174c]"
-                }`}
+                onClick={() => setVoiceSpeed(0.85)}
+                className="py-1.5 rounded-lg border font-medium transition bg-[#20123b]/70 border-violet-500/20 text-violet-200/80 hover:bg-[#29174c]"
               >
-                နှေး (0.80x)
+                နှေး (0.85x)
               </button>
               <button
                 type="button"
-                onClick={() => setVoiceSpeed(0.94)}
-                className={`py-1.5 rounded-lg border font-medium transition ${
-                  Math.abs(voiceSpeed - 0.94) < 0.01
-                    ? "bg-violet-500/30 border-violet-300/50 text-white"
-                    : "bg-[#20123b]/70 border-violet-500/20 text-violet-200/80 hover:bg-[#29174c]"
-                }`}
+                onClick={() => setVoiceSpeed(1.0)}
+                className="py-1.5 rounded-lg border font-medium transition bg-[#20123b]/70 border-violet-500/20 text-violet-200/80 hover:bg-[#29174c]"
               >
-                ပုံမှန် (0.94x)
+                ပုံမှန် (1.00x)
               </button>
               <button
                 type="button"
-                onClick={() => setVoiceSpeed(1.15)}
-                className={`py-1.5 rounded-lg border font-medium transition ${
-                  Math.abs(voiceSpeed - 1.15) < 0.01
-                    ? "bg-violet-500/30 border-violet-300/50 text-white"
-                    : "bg-[#20123b]/70 border-violet-500/20 text-violet-200/80 hover:bg-[#29174c]"
-                }`}
+                onClick={() => setVoiceSpeed(1.2)}
+                className="py-1.5 rounded-lg border font-medium transition bg-[#20123b]/70 border-violet-500/20 text-violet-200/80 hover:bg-[#29174c]"
               >
-                မြန် (1.15x)
+                မြန် (1.20x)
               </button>
             </div>
           </div>
         </section>
 
-        {/* Step 4: Script Input */}
         <section className="rounded-2xl bg-[#160d29]/85 border border-violet-500/20 p-4 space-y-2.5 shadow-lg backdrop-blur-md">
-          <label className="text-sm font-semibold text-violet-100 flex items-center gap-2">
-            <span className="w-5 h-5 rounded-md bg-violet-500/25 border border-violet-400/30 text-[11px] font-bold flex items-center justify-center text-violet-200">
-              4
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-semibold text-violet-100 flex items-center gap-2">
+              <span className="w-5 h-5 rounded-md bg-violet-500/25 border border-violet-400/30 text-[11px] font-bold flex items-center justify-center text-violet-200">
+                4
+              </span>
+              <span>ရိုက်ထည့်သော စာသား (အကြိုက်ထည့်)</span>
+            </label>
+            <span className="text-[11px] font-semibold px-2 py-0.5 rounded-md border bg-violet-500/15 text-violet-200/80 border-violet-400/20">
+              {scriptText.length.toLocaleString()} လုံး
             </span>
-            <span>ရိုက်ထည့်သော စာသား</span>
-          </label>
+          </div>
           <p className="text-[11px] text-violet-300/65">
-            မည်သည့်ဘာသာမဆို မြန်မာပြန်ပေးပြီး အသံထွက် + အောက်ခြေစာတန်း ထိုးပေးမည်
+            မည်သည့်ဘာသာမဆို မြန်မာပြန်ပေးပြီး အသံထွက် + စာတန်း ထိုးပေးမည်
           </p>
           <textarea
-            rows={4}
+            rows={5}
             value={scriptText}
             onChange={(e) => setScriptText(e.target.value)}
-            placeholder="ဇာတ်လမ်း သို့မဟုတ် ဇာတ်ညွှန်းစာသားကို ဒီနေရာမှာ ရိုက်ထည့်ပါ..."
+            placeholder="ဇာတ်လမ်း သို့မဟုတ် ဇာတ်ညွှန်းစာသားကို အကြိုက် ရိုက်ထည့်ပါ..."
             className="w-full rounded-xl bg-[#100820]/90 border border-violet-500/25 p-3 text-sm text-white placeholder:text-violet-300/35 focus:outline-none focus:border-fuchsia-400/70 transition"
           />
         </section>
 
-        {/* Primary CTA Button */}
         <button
           type="button"
           onClick={handleGenerate}
           disabled={isGenerating || isUploading}
           className="w-full py-3.5 px-5 rounded-2xl bg-gradient-to-r from-violet-600 via-purple-600 to-fuchsia-600 hover:brightness-110 active:scale-[0.99] disabled:opacity-50 font-bold text-sm text-white shadow-[0_10px_30px_-6px_rgba(192,38,211,0.55)] transition-all"
         >
-          {isGenerating ? "⏳ အသံ + စာတန်း ထုတ်နေပါသည်..." : "▶ အသံ + စာတန်း ထုတ်မည်"}
+          {isGenerating ? "⚡ ထုတ်နေပါသည်..." : "▶ အသံ + စာတန်း ထုတ်မည်"}
         </button>
 
-        {/* Status Box */}
         {statusText && (
           <div
             className={`rounded-2xl px-4 py-3 text-xs font-medium border backdrop-blur-md ${
@@ -568,7 +554,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Output Video & Download */}
         {outputUrl && (
           <section className="rounded-2xl bg-[#160d29]/90 border border-violet-400/30 p-4 space-y-3 shadow-xl backdrop-blur-md">
             <div className="flex items-center justify-between">
@@ -596,7 +581,6 @@ export default function App() {
           </section>
         )}
 
-        {/* Output Subtitle */}
         {subtitleText && (
           <section className="rounded-2xl bg-[#160d29]/90 border border-violet-500/25 p-4 space-y-2 shadow-lg backdrop-blur-md">
             <div className="text-xs font-bold uppercase tracking-wider text-violet-200">
