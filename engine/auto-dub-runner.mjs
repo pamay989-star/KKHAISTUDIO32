@@ -163,43 +163,111 @@ async function probeMediaStreams(filePath) {
   return info;
 }
 
+async function runWithConcurrency(items, limit, workerFn) {
+  const results = new Array(items.length);
+  let idx = 0;
+
+  async function next() {
+    const current = idx++;
+    if (current >= items.length) return;
+    results[current] = await workerFn(items[current], current);
+    await next();
+  }
+
+  const runners = Array.from({ length: Math.min(limit, items.length) }, () => next());
+  await Promise.all(runners);
+  return results;
+}
+
+async function translateSingleChunkToBurmese(chunkText) {
+  const clean = (chunkText || '').trim().replace(/\s+/g, ' ');
+  if (!clean) return '';
+  if (/^[\u1000-\u109F\s0-9.,!?;:'"()\-]+$/.test(clean) && /[\u1000-\u109F]/.test(clean)) {
+    return clean;
+  }
+
+  const cacheKey = clean.slice(0, 1000);
+  if (translationCache.has(cacheKey)) {
+    return translationCache.get(cacheKey);
+  }
+
+  const endpoints = [
+    `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=my&dt=t&q=${encodeURIComponent(clean)}`,
+    `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=my&q=${encodeURIComponent(clean)}`
+  ];
+
+  for (const url of endpoints) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 9000);
+      try {
+        const res = await fetch(url, {
+          signal: controller.signal,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          }
+        });
+        if (!res.ok) continue;
+        const data = await res.json();
+
+        let translated = '';
+        if (Array.isArray(data?.[0])) {
+          translated = data[0]
+            .map((item) => (Array.isArray(item) && typeof item[0] === 'string' ? item[0] : ''))
+            .join('')
+            .trim();
+        } else if (Array.isArray(data)) {
+          translated = data
+            .map((item) => (Array.isArray(item) ? item[0] : typeof item === 'string' ? item : ''))
+            .filter(Boolean)
+            .join(' ')
+            .trim();
+        }
+
+        if (translated && translated !== clean) {
+          translationCache.set(cacheKey, translated);
+          return translated;
+        }
+      } catch {
+        // Retry once
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  }
+
+  return clean;
+}
+
 async function translateAnyLanguageToBurmese(text) {
   const clean = (text || '').trim().replace(/\s+/g, ' ');
   if (!clean) return '';
-  if (/[\u1000-\u109F]/.test(clean)) return clean;
-
-  const sliced = clean.slice(0, 2400);
-  if (translationCache.has(sliced)) {
-    return translationCache.get(sliced);
+  if (/^[\u1000-\u109F\s0-9.,!?;:'"()\-]+$/.test(clean) && /[\u1000-\u109F]/.test(clean)) {
+    return clean;
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
-  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=my&dt=t&q=${encodeURIComponent(sliced)}`;
-  try {
-    const res = await fetch(url, {
-      signal: controller.signal,
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (Array.isArray(data) && Array.isArray(data[0])) {
-        const translated = data[0]
-          .map((item) => (Array.isArray(item) && typeof item[0] === 'string' ? item[0] : ''))
-          .join('')
-          .trim();
-        if (translated) {
-          translationCache.set(sliced, translated);
-          return translated;
-        }
+  const rawParts = clean
+    .split(/(?<=[.!?。！？။၊।\n])\s*/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const pieces = [];
+  for (const part of rawParts.length ? rawParts : [clean]) {
+    if (part.length <= 320) {
+      pieces.push(part);
+    } else {
+      for (let i = 0; i < part.length; i += 300) {
+        const slice = part.slice(i, i + 300).trim();
+        if (slice) pieces.push(slice);
       }
     }
-  } catch {
-    // Fallback
-  } finally {
-    clearTimeout(timer);
   }
-  return clean;
+
+  const translatedPieces = await runWithConcurrency(pieces, 4, async (piece) =>
+    translateSingleChunkToBurmese(piece)
+  );
+
+  return translatedPieces.join(' ').replace(/\s+/g, ' ').trim();
 }
 
 function splitLinesForFullCoverage(text, durationSec) {
@@ -212,27 +280,20 @@ function splitLinesForFullCoverage(text, durationSec) {
 
   const rawSentences = clean
     ? clean
-        .split(/(?<=[.!?。！？။၊।])\s+/)
+        .split(/(?<=[.!?。！？။၊।])\s*/)
         .map((s) => s.trim())
         .filter(Boolean)
     : defaultLines;
 
   const lines = [];
   for (const sentence of rawSentences) {
-    if (sentence.length <= 240) {
+    if (sentence.length <= 160) {
       lines.push(sentence);
     } else {
-      const words = sentence.split(' ');
-      let cur = '';
-      for (const w of words) {
-        if ((cur + ' ' + w).trim().length > 235 && cur.trim()) {
-          lines.push(cur.trim());
-          cur = w;
-        } else {
-          cur = (cur + ' ' + w).trim();
-        }
+      for (let i = 0; i < sentence.length; i += 150) {
+        const sub = sentence.slice(i, i + 150).trim();
+        if (sub) lines.push(sub);
       }
-      if (cur.trim()) lines.push(cur.trim());
     }
   }
 
@@ -256,29 +317,8 @@ function splitLinesForFullCoverage(text, durationSec) {
 async function prepareBurmeseLinesForFullCoverage(text, durationSec) {
   const rawInput = (text || '').trim();
   if (!rawInput) return splitLinesForFullCoverage('', durationSec);
-
-  const rawChunks = rawInput
-    .split(/(?<=[.!?。！？။၊।\n])\s+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  const mergedChunks = [];
-  let bucket = '';
-  for (const ch of rawChunks) {
-    if ((bucket + ' ' + ch).trim().length > 1600 && bucket.trim()) {
-      mergedChunks.push(bucket.trim());
-      bucket = ch;
-    } else {
-      bucket = (bucket + ' ' + ch).trim();
-    }
-  }
-  if (bucket.trim()) mergedChunks.push(bucket.trim());
-
-  const translatedChunks = await runWithConcurrency(mergedChunks, 4, async (chunk) =>
-    translateAnyLanguageToBurmese(chunk)
-  );
-
-  return splitLinesForFullCoverage(translatedChunks.join(' '), durationSec);
+  const translatedFull = await translateAnyLanguageToBurmese(rawInput);
+  return splitLinesForFullCoverage(translatedFull, durationSec);
 }
 
 async function fetchGoogleBurmeseTtsMp3(text, outMp3Path) {
@@ -347,22 +387,6 @@ async function synthesizeSingleSegmentWav(seg, voiceId, segDir, speechSpeed) {
 
   const durSec = await getMediaDurationSec(fittedWav);
   return { fittedWav, durMs: Math.max(400, Math.round((durSec || 1.2) * 1000)) };
-}
-
-async function runWithConcurrency(items, limit, workerFn) {
-  const results = new Array(items.length);
-  let idx = 0;
-
-  async function next() {
-    const current = idx++;
-    if (current >= items.length) return;
-    results[current] = await workerFn(items[current], current);
-    await next();
-  }
-
-  const runners = Array.from({ length: Math.min(limit, items.length) }, () => next());
-  await Promise.all(runners);
-  return results;
 }
 
 async function buildSyncedTtsAudioAndSubEvents(
@@ -796,7 +820,7 @@ const server = http.createServer((req, res) => {
           gender = 'male',
           manualText = '',
           customVoiceFile = '',
-          blurOriginalSub = false,
+          blurOriginalSub = true,
           blurArea = 'bottom',
           voiceSpeed = DEFAULT_SPEECH_TEMPO
         } = JSON.parse(body || '{}');
@@ -984,5 +1008,5 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`[KKH AI STUDIO] Running on http://localhost:${PORT} (30m Turbo Mode)`);
+  console.log(`[KKH AI STUDIO] Running on http://localhost:${PORT} (30m Turbo + Multi-Lang Burmese)`);
 });
