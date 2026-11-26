@@ -9,8 +9,8 @@ const DEFAULT_SPEECH_TEMPO = 1.0;
 const DEFAULT_GENDER = 'male';
 const DEFAULT_PITCH = 0;
 const DEFAULT_LANG = 'my';
-const TTS_CONCURRENCY = 24;
-const TRANSLATE_CONCURRENCY = 24;
+const TTS_CONCURRENCY = 8;
+const TRANSLATE_CONCURRENCY = 8;
 
 function normalizeSpeechTempo(rawSpeed) {
   const num = Number(rawSpeed);
@@ -75,9 +75,9 @@ function cleanupOldWorkspaceFiles(maxAgeMs = 15 * 60 * 1000) {
 
 setInterval(() => cleanupOldWorkspaceFiles(), 10 * 60 * 1000);
 
-function runCmd(cmd, timeoutMs = 35000) {
+function runCmd(cmd, timeoutMs = 45000) {
   return new Promise((resolve, reject) => {
-    exec(cmd, { maxBuffer: 1024 * 1024 * 128, timeout: timeoutMs }, (err, stdout, stderr) => {
+    exec(cmd, { maxBuffer: 1024 * 1024 * 256, timeout: timeoutMs }, (err, stdout, stderr) => {
       if (err) {
         const msg = (stderr || err.message || 'Command failed').trim();
         console.error('[KKH CMD ERROR]', msg.slice(-200));
@@ -86,6 +86,45 @@ function runCmd(cmd, timeoutMs = 35000) {
       resolve({ stdout, stderr });
     });
   });
+}
+
+function writeSilentWavFallback(outWavPath, durationSec = 0.8) {
+  const sampleRate = 44100;
+  const numChannels = 2;
+  const bitsPerSample = 16;
+  const numSamples = Math.max(1000, Math.round(sampleRate * Math.max(0.3, durationSec)));
+  const dataSize = numSamples * numChannels * (bitsPerSample / 8);
+  const buf = Buffer.alloc(44 + dataSize);
+
+  buf.write('RIFF', 0);
+  buf.writeUInt32LE(36 + dataSize, 4);
+  buf.write('WAVE', 8);
+  buf.write('fmt ', 12);
+  buf.writeUInt32LE(16, 16);
+  buf.writeUInt16LE(1, 20);
+  buf.writeUInt16LE(numChannels, 22);
+  buf.writeUInt32LE(sampleRate, 24);
+  buf.writeUInt32LE(sampleRate * numChannels * (bitsPerSample / 8), 28);
+  buf.writeUInt16LE(numChannels * (bitsPerSample / 8), 32);
+  buf.writeUInt16LE(bitsPerSample, 34);
+  buf.write('data', 36);
+  buf.writeUInt32LE(dataSize, 40);
+
+  fs.writeFileSync(outWavPath, buf);
+}
+
+async function createSafeSilentWav(outWavPath, durationSec = 0.8) {
+  const safeDur = Math.max(0.4, Math.min(2.0, Number(durationSec) || 0.8));
+  try {
+    await runCmd(
+      `ffmpeg -y -f lavfi -i "anullsrc=r=44100:cl=stereo" -t ${safeDur.toFixed(2)} -c:a pcm_s16le "${toFfmpegPath(outWavPath)}"`,
+      5000
+    );
+    if (hasValidAudioFile(outWavPath, 200)) return;
+  } catch {
+    // Fall through to raw WAV writer
+  }
+  writeSilentWavFallback(outWavPath, safeDur);
 }
 
 function hasValidAudioFile(filePath, minBytes = 250) {
@@ -431,16 +470,14 @@ async function synthesizeSingleSegmentWav(
         6000
       );
     } else {
-      await runCmd(
-        `ffmpeg -y -f lavfi -i "anullsrc=r=44100:cl=stereo" -t ${fallbackSec.toFixed(2)} "${fittedFfmpeg}"`,
-        4000
-      );
+      await createSafeSilentWav(fittedWav, fallbackSec);
     }
   } catch {
-    await runCmd(
-      `ffmpeg -y -f lavfi -i "anullsrc=r=44100:cl=stereo" -t ${fallbackSec.toFixed(2)} "${fittedFfmpeg}"`,
-      4000
-    );
+    await createSafeSilentWav(fittedWav, fallbackSec);
+  }
+
+  if (!hasValidAudioFile(fittedWav, 200)) {
+    writeSilentWavFallback(fittedWav, fallbackSec);
   }
 
   const rawDurSec = await getMediaDurationSec(fittedWav);
@@ -504,18 +541,26 @@ async function buildOnTimeTtsAudioAndSubEvents(
       .join('\n');
     fs.writeFileSync(listPath, listContent, 'utf-8');
 
-    await runCmd(
-      `ffmpeg -y -f concat -safe 0 -i "${toFfmpegPath(listPath)}" -af "apad=whole_dur=${totalSec}" -t ${totalSec} -c:a libmp3lame -q:a 9 "${finalMp3Ffmpeg}"`,
-      20000
-    );
-    return { syncedSubEvents, effectiveTotalSec: totalSec };
+    try {
+      await runCmd(
+        `ffmpeg -y -f concat -safe 0 -i "${toFfmpegPath(listPath)}" -af "apad=whole_dur=${totalSec}" -t ${totalSec} -c:a libmp3lame -q:a 9 "${finalMp3Ffmpeg}"`,
+        25000
+      );
+      if (hasValidAudioFile(finalMp3Path, 200)) {
+        return { syncedSubEvents, effectiveTotalSec: totalSec };
+      }
+    } catch {
+      // Fallback to single merged silent WAV -> MP3
+    }
   }
 
+  const fallbackWav = path.join(tempDir, 'fallback_full.wav');
+  await createSafeSilentWav(fallbackWav, Math.min(totalSec, 15));
   await runCmd(
-    `ffmpeg -y -f lavfi -i "anullsrc=r=44100:cl=stereo" -t ${totalSec} -c:a libmp3lame -q:a 9 "${finalMp3Ffmpeg}"`,
-    10000
+    `ffmpeg -y -stream_loop -1 -i "${toFfmpegPath(fallbackWav)}" -t ${totalSec} -c:a libmp3lame -q:a 9 "${finalMp3Ffmpeg}"`,
+    15000
   );
-  return { syncedSubEvents: [], effectiveTotalSec: totalSec };
+  return { syncedSubEvents, effectiveTotalSec: totalSec };
 }
 
 function findFontFile(targetLang = 'my') {
