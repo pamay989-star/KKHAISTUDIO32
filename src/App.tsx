@@ -1,9 +1,106 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 const API = "";
 
 type SubPosition = "bottom" | "top" | "both";
-type VoiceChoice = "female" | "male" | "custom";
+type VoiceId = "thiha" | "nilar";
+type VoiceStyleMode = "pro_recap" | "conversational";
+type OutputLang = "my" | "en";
+
+const UI_TEXT = {
+  my: {
+    subtitle: "Pro Recap Voice AI • MY / EN • THIHA / NILAR",
+    langBadgeLabel: "Lang",
+    section1: "01 • Video Source",
+    subTag: "BOTTOM SUB",
+    uploadingVideo: "Video တင်နေပါသည်...",
+    changeVideoHint: "ပြောင်းရန် ထပ်နှိပ်ပါ",
+    pickVideoTitle: "+ Video ဖိုင်ရွေးရန် နှိပ်ပါ",
+    pickVideoSub: "မူလစာဝါးပြီး အောက်ခြေမှာ စာတန်းထိုးမည်",
+    blurLabel: "မူလစာ ဝါးပေးမည်",
+    blurBottom: "အောက်ခြေဝါး",
+    blurTop: "အပေါ်ပိုင်းဝါး",
+    blurBoth: "နှစ်ဖက်ဝါး",
+    section2: "02 • Voice & Language",
+    stylePro: "Pro Recap (ပရော်ဖက်ရှင်နယ်)",
+    styleConv: "Conversational (သဘာဝကျကျ)",
+    voiceMale: "THIHA (ကျား)",
+    voiceFemale: "NILAR (မ)",
+    langMy: "မြန်မာ (MY)",
+    langEn: "English (EN)",
+    pitchLabel: "Pitch",
+    speedLabel: "Speed",
+    section3: "03 • Script စာသား",
+    scriptPlaceholder:
+      "Pro Recap စကားပြောပုံစံနဲ့ ပြန်မယ့် Script စာသားကို ဒီမှာ ထည့်ပါ...",
+    generatingBtn: "⚡ ထုတ်နေပါသည်...",
+    generateBtn: "⚡ Video နဲ့ အချိန်ကိုက်ထုတ်မည်",
+    previewTitle: "Video ပြန်ကြည့်ရန်",
+    replayBtn: "↻ အစမှ ပြန်ကြည့်မည်",
+    downloadBtn: "⬇ Download MP4",
+    scriptSyncTitle: "Script အချိန်ကိုက်ချက်",
+    runnerOffline: "Runner မပွင့်သေးပါ။",
+    runnerLost: "Runner ချိတ်ဆက်မှု ပြတ်သွားပါသည်။",
+    needScript: "Script စာသားကို အရင်ထည့်ပေးပါ။",
+    selectedMale: "ယောက်ျားလေးအသံ (THIHA) ရွေးထားပါသည်။ Pitch = 0",
+    selectedFemale: "မိန်းကလေးအသံ (NILAR) ရွေးထားပါသည်။ Pitch = 0",
+    switchedToEn: "English ဘာသာစကား ပြောင်းထားပါသည်။",
+    switchedToMy: "မြန်မာ ဘာသာစကား ပြောင်းထားပါသည်။",
+    videoReady: (mb: string) =>
+      `Video Ready (${mb} MB)။ Script ထည့်ပြီး ထုတ်မည် ခလုတ်ကို နှိပ်ပါ။`,
+    videoUploadFail: "Video တင်မရပါ။",
+    generatingStatus: (voice: string, langLabel: string) =>
+      `${voice} (${langLabel}) နဲ့ အချိန်ကိုက် ထုတ်နေပါသည်...`,
+    doneStatus: "ပြီးပါပြီ။ Video ကို ပြန်ကြည့်ပြီး စစ်ဆေးနိုင်ပါပြီ။",
+    generateFail: "Video ထုတ်မရပါ။",
+  },
+  en: {
+    subtitle: "Pro Recap Voice AI • MY / EN • THIHA / NILAR",
+    langBadgeLabel: "Lang",
+    section1: "01 • Video Source",
+    subTag: "BOTTOM SUB",
+    uploadingVideo: "Uploading video...",
+    changeVideoHint: "Tap again to change video",
+    pickVideoTitle: "+ Tap to choose a video file",
+    pickVideoSub: "Blur original text and burn bottom subtitles",
+    blurLabel: "Blur Original Subtitles",
+    blurBottom: "Blur Bottom",
+    blurTop: "Blur Top",
+    blurBoth: "Blur Both",
+    section2: "02 • Voice & Language",
+    stylePro: "Pro Recap (Narrator)",
+    styleConv: "Conversational (Natural)",
+    voiceMale: "KKH (Male)",
+    voiceFemale: "HSU(Female)",
+    langMy: "Burmese (MY)",
+    langEn: "English (EN)",
+    pitchLabel: "Pitch",
+    speedLabel: "Speed",
+    section3: "03 • Script Text",
+    scriptPlaceholder:
+      "Enter your recap or narration script here...",
+    generatingBtn: "⚡ Generating...",
+    generateBtn: "⚡ Generate Synced Video",
+    previewTitle: "Video Preview",
+    replayBtn: "↻ Replay from Start",
+    downloadBtn: "⬇ Download MP4",
+    scriptSyncTitle: "Synced Script Timeline",
+    runnerOffline: "Runner is not running.",
+    runnerLost: "Connection to runner was lost.",
+    needScript: "Please enter a script first.",
+    selectedMale: "Male voice (THIHA) selected. Pitch = 0",
+    selectedFemale: "Female voice (NILAR) selected. Pitch = 0",
+    switchedToEn: "Switched to English.",
+    switchedToMy: "Switched to Burmese.",
+    videoReady: (mb: string) =>
+      `Video Ready (${mb} MB). Enter your script and tap Generate.`,
+    videoUploadFail: "Failed to upload video.",
+    generatingStatus: (voice: string, langLabel: string) =>
+      `Generating synced output with ${voice} (${langLabel})...`,
+    doneStatus: "Done! You can now preview and download your video.",
+    generateFail: "Failed to generate video.",
+  },
+} as const;
 
 async function parseJsonSafely(res: Response) {
   const raw = await res.text();
@@ -50,24 +147,29 @@ export default function App() {
   const [videoFile, setVideoFile] = useState<string>("");
   const [blurEnabled, setBlurEnabled] = useState<boolean>(true);
   const [subPosition, setSubPosition] = useState<SubPosition>("bottom");
-  const [voiceChoice, setVoiceChoice] = useState<VoiceChoice>("male");
+
+  const [selectedVoice, setSelectedVoice] = useState<VoiceId>("thiha");
+  const [voiceStyle, setVoiceStyle] = useState<VoiceStyleMode>("pro_recap");
+  const [language, setLanguage] = useState<OutputLang>("my");
+
   const [voiceSpeed, setVoiceSpeed] = useState<number>(1.0);
-  const [customVoiceFile, setCustomVoiceFile] = useState<string>("");
-  const [voiceLabel, setVoiceLabel] = useState<string>("");
+  const [pitchShift, setPitchShift] = useState<number>(0);
   const [scriptText, setScriptText] = useState<string>("");
 
   const [statusText, setStatusText] = useState<string>("");
   const [isError, setIsError] = useState<boolean>(false);
   const [runnerOnline, setRunnerOnline] = useState<boolean | null>(null);
   const [isUploading, setIsUploading] = useState<boolean>(false);
-  const [isUploadingVoice, setIsUploadingVoice] = useState<boolean>(false);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [outputUrl, setOutputUrl] = useState<string>("");
   const [downloadUrl, setDownloadUrl] = useState<string>("");
   const [subtitleText, setSubtitleText] = useState<string>("");
+  const [videoAudit, setVideoAudit] = useState<any>(null);
 
   const videoInputRef = useRef<HTMLInputElement | null>(null);
-  const voiceInputRef = useRef<HTMLInputElement | null>(null);
+  const previewVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  const t = useMemo(() => UI_TEXT[language], [language]);
 
   useEffect(() => {
     let active = true;
@@ -84,9 +186,7 @@ export default function App() {
           setRunnerOnline(false);
           setIsError(true);
           setStatusText(
-            `Runner မပွင့်သေးပါ။ npm start ကို run ပါ။ (${
-              data?.error || `HTTP ${res.status}`
-            })`
+            `${UI_TEXT.my.runnerOffline} (${data?.error || `HTTP ${res.status}`})`
           );
         }
       } catch (err: any) {
@@ -94,9 +194,7 @@ export default function App() {
         setRunnerOnline(false);
         setIsError(true);
         setStatusText(
-          `Runner မပွင့်သေးပါ။ npm start ကို run ပါ။ (${
-            err?.message || "Failed to fetch"
-          })`
+          `${UI_TEXT.my.runnerOffline} (${err?.message || "Failed to fetch"})`
         );
       }
     };
@@ -106,13 +204,27 @@ export default function App() {
     };
   }, []);
 
+  const handleSelectVoice = (voice: VoiceId) => {
+    setSelectedVoice(voice);
+    setIsError(false);
+    setStatusText(voice === "thiha" ? t.selectedMale : t.selectedFemale);
+  };
+
+  const handleSelectLanguage = (lang: OutputLang) => {
+    setLanguage(lang);
+    setIsError(false);
+    setStatusText(
+      lang === "en" ? UI_TEXT.en.switchedToEn : UI_TEXT.my.switchedToMy
+    );
+  };
+
   const handleFilePick = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     setIsUploading(true);
     setIsError(false);
-    setStatusText("Video တင်နေပါသည်...");
+    setStatusText(t.uploadingVideo);
 
     try {
       const { res, data: d, usedPath } = await fetchWithRouteFallback(
@@ -135,84 +247,44 @@ export default function App() {
         setVideoFile(d.fileName || file.name);
         setRunnerOnline(true);
         setIsError(false);
-        setStatusText(
-          `Video Ready (${sizeMb} MB)။ အခု ထုတ်မည် ခလုတ်ကို နှိပ်ပါ။`
-        );
+        setStatusText(t.videoReady(sizeMb));
       } else {
         setIsError(true);
         setStatusText(
-          `${d?.error || "Video တင်မရပါ။"} [${usedPath} -> HTTP ${res.status}]`
+          `${d?.error || t.videoUploadFail} [${usedPath} -> HTTP ${res.status}]`
         );
       }
     } catch (err: any) {
       setRunnerOnline(false);
       setIsError(true);
       setStatusText(
-        `Runner မပွင့်သေးပါ။ npm start ကို run ပါ။ (${
-          err?.message || "Failed to fetch"
-        })`
+        `${t.runnerOffline} (${err?.message || "Failed to fetch"})`
       );
     } finally {
       setIsUploading(false);
-    }
-  };
-
-  const handleVoicePick = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const mb = (file.size / (1024 * 1024)).toFixed(1);
-    setVoiceLabel(`${file.name} (${mb} MB)`);
-    setIsError(false);
-    setIsUploadingVoice(true);
-    setStatusText(`ကိုယ်ပိုင်အသံ ဖိုင်တင်နေပါသည် (${mb} MB)...`);
-
-    try {
-      const { res, data: d, usedPath } = await fetchWithRouteFallback(
-        ["/upload-voice", "/api/upload-voice"],
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/octet-stream",
-            "x-file-name": encodeURIComponent(file.name),
-          },
-          body: file,
-        }
-      );
-
-      if (res.ok && d?.ok) {
-        setCustomVoiceFile(d.fileName || file.name);
-        setRunnerOnline(true);
-        setIsError(false);
-        setStatusText(`ကိုယ်ပိုင်အသံ Ready (${file.name})`);
-      } else {
-        setIsError(true);
-        setStatusText(
-          `${d?.error || "အသံဖိုင် တင်မရပါ။"} [${usedPath} -> HTTP ${
-            res.status
-          }]`
-        );
-      }
-    } catch (err: any) {
-      setRunnerOnline(false);
-      setIsError(true);
-      setStatusText(
-        `Runner မပွင့်သေးပါ။ npm start ကို run ပါ။ (${
-          err?.message || "Failed to fetch"
-        })`
-      );
-    } finally {
-      setIsUploadingVoice(false);
+      if (e.target) e.target.value = "";
     }
   };
 
   const handleGenerate = async () => {
+    if (!scriptText.trim()) {
+      setIsError(true);
+      setStatusText(t.needScript);
+      return;
+    }
+
     setIsGenerating(true);
     setIsError(false);
     setOutputUrl("");
     setDownloadUrl("");
     setSubtitleText("");
-    setStatusText("မြန်မာပြန် + အသံ + စာတန်း ထုတ်နေပါသည်...");
+    setVideoAudit(null);
+    setStatusText(
+      t.generatingStatus(
+        selectedVoice === "nilar" ? "NILAR" : "THIHA",
+        language === "en" ? "English" : "မြန်မာ"
+      )
+    );
 
     try {
       const { res, data: d, usedPath } = await fetchWithRouteFallback(
@@ -224,12 +296,15 @@ export default function App() {
           },
           body: JSON.stringify({
             videoFile: videoFile || "input.mp4",
-            gender: voiceChoice === "female" ? "female" : "male",
+            voiceProfile: selectedVoice,
+            gender: selectedVoice === "nilar" ? "female" : "male",
+            voiceStyle,
+            language,
             manualText: scriptText.trim(),
-            customVoiceFile,
             blurOriginalSub: blurEnabled,
             blurArea: subPosition,
             voiceSpeed,
+            pitchShift,
           }),
         }
       );
@@ -237,7 +312,7 @@ export default function App() {
       if (res.ok && d?.ok) {
         setRunnerOnline(true);
         setIsError(false);
-        setStatusText("ပြီးပါပြီ။ အသံနှင့် စာတန်း ထွက်လာပါပြီ။");
+        setStatusText(t.doneStatus);
         const rawUrl =
           d.streamUrl || d.outputUrl || d.videoUrl || d.audioUrl || "";
         if (rawUrl) {
@@ -250,73 +325,99 @@ export default function App() {
         if (d.burmeseText || d.subtitle || d.srt || d.text) {
           setSubtitleText(d.burmeseText || d.subtitle || d.srt || d.text);
         }
+        if (d.audit) {
+          setVideoAudit(d.audit);
+        }
       } else {
         setIsError(true);
         setStatusText(
-          `${d?.error || "အသံ/စာတန်း ထုတ်မရပါ။"} [${usedPath} -> HTTP ${
-            res.status
-          }]`
+          `${d?.error || t.generateFail} [${usedPath} -> HTTP ${res.status}]`
         );
       }
     } catch (err: any) {
       setRunnerOnline(false);
       setIsError(true);
       setStatusText(
-        `Runner မပွင့်သေးပါ။ npm start ကို run ပါ။ (${
-          err?.message || "Failed to fetch"
-        })`
+        `${t.runnerLost} (${err?.message || "Failed to fetch"})`
       );
     } finally {
       setIsGenerating(false);
     }
   };
 
+  const handleReplayFromStart = () => {
+    if (!previewVideoRef.current) return;
+    previewVideoRef.current.currentTime = 0;
+    previewVideoRef.current.play().catch(() => {});
+  };
+
   return (
-    <div className="min-h-screen bg-[radial-gradient(ellipse_at_top,_#251348_0%,_#0d0818_55%,_#07040e_100%)] text-[#F6F3FF] px-4 py-7 flex justify-center selection:bg-fuchsia-500/30">
-      <div className="w-full max-w-md space-y-4">
-        <header className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#231342]/90 via-[#170d2e]/90 to-[#110922]/90 border border-violet-400/25 p-4 shadow-[0_12px_35px_-10px_rgba(139,92,246,0.45)] backdrop-blur-xl">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-violet-300/90 bg-violet-500/15 border border-violet-400/25 px-2.5 py-0.5 rounded-full mb-1.5">
-                <span
-                  className={`w-2 h-2 rounded-full ${
-                    runnerOnline === true
-                      ? "bg-emerald-400 shadow-[0_0_8px_#34d399]"
-                      : runnerOnline === false
-                      ? "bg-rose-400 shadow-[0_0_8px_#fb7185]"
-                      : "bg-amber-300 animate-pulse"
-                  }`}
-                />
-                <span>
-                  {runnerOnline === true
-                    ? "Runner Online"
-                    : runnerOnline === false
-                    ? "Runner Offline"
-                    : "Checking..."}
-                </span>
+    <div className="relative min-h-screen overflow-x-hidden bg-[radial-gradient(ellipse_at_top,_#34166e_0%,_#120826_52%,_#06020e_100%)] text-[#F7F3FF] px-3.5 py-5 flex justify-center selection:bg-fuchsia-500/30">
+      <div className="pointer-events-none fixed -left-24 top-16 w-72 h-72 rounded-full bg-purple-600/25 blur-3xl" />
+      <div className="pointer-events-none fixed -right-24 bottom-16 w-72 h-72 rounded-full bg-fuchsia-500/20 blur-3xl" />
+
+      <div className="relative z-10 w-full max-w-[420px] space-y-3.5">
+        <header className="rounded-3xl bg-[#1b0e36]/90 border border-purple-400/25 p-4 shadow-[0_14px_36px_-10px_rgba(147,51,234,0.45)] backdrop-blur-xl">
+          <div className="flex items-center justify-between gap-2.5">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-11 h-11 shrink-0 rounded-2xl bg-gradient-to-br from-fuchsia-500 via-purple-600 to-indigo-600 flex items-center justify-center text-white font-black text-base shadow-[0_0_18px_rgba(192,38,211,0.5)]">
+                KH
               </div>
-              <h1 className="text-xl font-extrabold tracking-tight bg-gradient-to-r from-white via-violet-200 to-fuchsia-300 bg-clip-text text-transparent">
-                KKH AI STUDIO
-              </h1>
-              <p className="text-xs text-violet-200/75 mt-0.5">
-                30m Video + မူလစာတန်းဝါး + မြန်မာပြန် + စာအကြိုက်ထည့်
-              </p>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <h1 className="text-base font-extrabold tracking-tight text-white truncate">
+                    KKH AI STUDIO
+                  </h1>
+                  <span
+                    className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                      runnerOnline === true
+                        ? "bg-emerald-500/15 text-emerald-300 border-emerald-400/30"
+                        : runnerOnline === false
+                        ? "bg-rose-500/15 text-rose-300 border-rose-400/30"
+                        : "bg-amber-500/15 text-amber-200 border-amber-400/30"
+                    }`}
+                  >
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full ${
+                        runnerOnline === true
+                          ? "bg-emerald-400"
+                          : runnerOnline === false
+                          ? "bg-rose-400"
+                          : "bg-amber-300 animate-pulse"
+                      }`}
+                    />
+                    {runnerOnline === true
+                      ? "ONLINE"
+                      : runnerOnline === false
+                      ? "OFFLINE"
+                      : "SYNC"}
+                  </span>
+                </div>
+                <p className="text-[11px] text-purple-200/75 truncate">
+                  {t.subtitle}
+                </p>
+              </div>
             </div>
-            <span className="shrink-0 text-[11px] font-bold px-2.5 py-1 rounded-lg bg-violet-500/20 text-violet-200 border border-violet-400/30">
-              KKH
-            </span>
+
+            <div className="shrink-0 rounded-2xl bg-[#27154d] border border-purple-400/25 px-2.5 py-1.5 text-right">
+              <div className="text-[10px] uppercase tracking-wider text-purple-300/70">
+                {t.langBadgeLabel}
+              </div>
+              <div className="text-xs font-extrabold text-fuchsia-300">
+                {language === "en" ? "EN" : "MY"}
+              </div>
+            </div>
           </div>
         </header>
 
-        <section className="rounded-2xl bg-[#160d29]/85 border border-violet-500/20 p-4 space-y-2.5 shadow-lg backdrop-blur-md">
+        <section className="rounded-3xl bg-[#180d30]/90 border border-purple-400/20 p-3.5 space-y-2.5 shadow-lg backdrop-blur-md">
           <div className="flex items-center justify-between">
-            <label className="text-sm font-semibold text-violet-100 flex items-center gap-2">
-              <span className="w-5 h-5 rounded-md bg-violet-500/25 border border-violet-400/30 text-[11px] font-bold flex items-center justify-center text-violet-200">
-                1
-              </span>
-              <span>Video ထည့်ရန် (30m+)</span>
-            </label>
-            <span className="text-[11px] text-violet-300/70">Max 2GB</span>
+            <span className="text-xs font-bold uppercase tracking-wider text-purple-200">
+              {t.section1}
+            </span>
+            <span className="text-[11px] font-semibold px-2 py-0.5 rounded-lg bg-purple-500/20 text-purple-200 border border-purple-400/25">
+              {t.subTag}
+            </span>
           </div>
 
           <input
@@ -331,205 +432,236 @@ export default function App() {
             type="button"
             onClick={() => videoInputRef.current?.click()}
             disabled={isUploading}
-            className="w-full group py-3.5 px-4 rounded-xl border border-dashed border-violet-400/45 bg-[#20123b]/80 hover:bg-[#2a174f] hover:border-fuchsia-400/60 disabled:opacity-60 text-left transition-all duration-200"
+            className="w-full py-3.5 px-4 rounded-2xl bg-[#231344] hover:bg-[#2c1855] border border-dashed border-fuchsia-400/45 disabled:opacity-60 text-left transition cursor-pointer"
           >
             {isUploading ? (
-              <div className="text-sm font-semibold text-fuchsia-300 animate-pulse">
-                Video ဖိုင် တင်နေပါသည်...
+              <div className="text-xs font-bold text-fuchsia-300 animate-pulse">
+                {t.uploadingVideo}
               </div>
             ) : videoFile ? (
               <div className="space-y-0.5">
-                <div className="text-sm font-bold text-emerald-300 truncate">
+                <div className="text-xs font-extrabold text-emerald-300 truncate">
                   ✓ {videoFile}
                 </div>
-                <div className="text-[11px] text-violet-300/75">
-                  ပြောင်းလဲလိုလျှင် ထပ်နှိပ်၍ Video အသစ်ရွေးပါ
+                <div className="text-[11px] text-purple-300/70">
+                  {t.changeVideoHint}
                 </div>
               </div>
             ) : (
-              <div className="space-y-1">
-                <div className="text-sm font-semibold text-violet-100 group-hover:text-white">
-                  + Video ဖိုင် ရွေးရန် နှိပ်ပါ
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-bold text-white">
+                    {t.pickVideoTitle}
+                  </div>
+                  <div className="text-[11px] text-purple-300/65">
+                    {t.pickVideoSub}
+                  </div>
                 </div>
-                <div className="text-[11px] text-violet-300/65">
-                  မူလစာတန်းဝါးခြင်း + အောက်ခြေမြန်မာစာတန်း ထည့်သွင်းမည်
-                </div>
+                <span className="text-xs font-bold px-2.5 py-1 rounded-xl bg-fuchsia-500/20 text-fuchsia-200 border border-fuchsia-400/30">
+                  MP4
+                </span>
               </div>
             )}
           </button>
-        </section>
 
-        <section className="rounded-2xl bg-[#160d29]/85 border border-violet-500/20 p-4 space-y-3 shadow-lg backdrop-blur-md">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-semibold text-violet-100 flex items-center gap-2">
-              <span className="w-5 h-5 rounded-md bg-violet-500/25 border border-violet-400/30 text-[11px] font-bold flex items-center justify-center text-violet-200">
-                2
-              </span>
-              <span>မူလစာတန်း ဝါးပေးရန်</span>
+          <div className="flex items-center justify-between pt-1 px-1">
+            <span className="text-xs font-semibold text-purple-100">
+              {t.blurLabel}
             </span>
 
             <button
               type="button"
               role="switch"
               aria-checked={blurEnabled}
-              onClick={() => setBlurEnabled(!blurEnabled)}
-              className={`w-11 h-6 rounded-full p-0.5 transition-colors duration-200 ${
+              onClick={() => setBlurEnabled((prev) => !prev)}
+              className={`w-11 h-6 rounded-full p-0.5 transition-colors cursor-pointer ${
                 blurEnabled
-                  ? "bg-gradient-to-r from-violet-500 to-fuchsia-500"
-                  : "bg-slate-700/80"
+                  ? "bg-gradient-to-r from-fuchsia-500 to-purple-600"
+                  : "bg-slate-700"
               }`}
             >
               <span
-                className={`block w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${
+                className={`block w-5 h-5 rounded-full bg-white shadow transition-transform ${
                   blurEnabled ? "translate-x-5" : "translate-x-0"
                 }`}
               />
             </button>
           </div>
 
-          <div className="grid grid-cols-3 gap-2">
-            {(
-              [
-                ["bottom", "အောက်ခြေဝါး"],
-                ["top", "အပေါ်ပိုင်းဝါး"],
-                ["both", "အပေါ်/အောက်ဝါး"],
-              ] as const
-            ).map(([pos, label]) => (
-              <button
-                key={pos}
-                type="button"
-                onClick={() => setSubPosition(pos)}
-                className={`py-2 px-2 rounded-xl text-xs font-semibold border transition-all ${
-                  subPosition === pos
-                    ? "bg-gradient-to-r from-violet-600 to-fuchsia-600 border-fuchsia-300/50 text-white shadow-[0_4px_14px_rgba(168,85,247,0.4)]"
-                    : "bg-[#20123b]/70 border-violet-500/20 text-violet-200/75 hover:bg-[#29174c]"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section className="rounded-2xl bg-[#160d29]/85 border border-violet-500/20 p-4 space-y-3.5 shadow-lg backdrop-blur-md">
-          <div className="text-sm font-semibold text-violet-100 flex items-center gap-2">
-            <span className="w-5 h-5 rounded-md bg-violet-500/25 border border-violet-400/30 text-[11px] font-bold flex items-center justify-center text-violet-200">
-              3
-            </span>
-            <span>အသံ ရွေးချယ်ရန်</span>
-          </div>
-
-          <div className="grid grid-cols-3 gap-2">
-            {(
-              [
-                ["female", "မိန်းကလေး"],
-                ["male", "ယောက်ျားလေး"],
-                ["custom", "ကိုယ်ပိုင်အသံ"],
-              ] as const
-            ).map(([val, label]) => (
-              <button
-                key={val}
-                type="button"
-                onClick={() => {
-                  setVoiceChoice(val);
-                  if (val === "custom") {
-                    voiceInputRef.current?.click();
-                  }
-                }}
-                className={`py-2.5 px-2 rounded-xl text-xs font-semibold border transition-all ${
-                  voiceChoice === val
-                    ? "bg-gradient-to-r from-violet-600 to-fuchsia-600 border-fuchsia-300/50 text-white shadow-[0_4px_14px_rgba(168,85,247,0.4)]"
-                    : "bg-[#20123b]/70 border-violet-500/20 text-violet-200/75 hover:bg-[#29174c]"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-
-          <input
-            ref={voiceInputRef}
-            type="file"
-            accept="audio/*"
-            onChange={handleVoicePick}
-            className="hidden"
-          />
-
-          {voiceChoice === "custom" && (
-            <div className="rounded-xl bg-[#20123b]/90 border border-violet-400/25 px-3 py-2 text-xs text-violet-200">
-              {isUploadingVoice
-                ? "အသံဖိုင် တင်နေပါသည်..."
-                : voiceLabel || "အသံဖိုင် ရွေးရန် နှိပ်ပါ"}
+          {blurEnabled && (
+            <div className="grid grid-cols-3 gap-1.5 pt-1">
+              {(
+                [
+                  ["bottom", t.blurBottom],
+                  ["top", t.blurTop],
+                  ["both", t.blurBoth],
+                ] as const
+              ).map(([pos, label]) => (
+                <button
+                  key={pos}
+                  type="button"
+                  onClick={() => setSubPosition(pos)}
+                  className={`py-1.5 px-2 rounded-xl text-[11px] font-bold border transition cursor-pointer ${
+                    subPosition === pos
+                      ? "bg-gradient-to-r from-fuchsia-600 to-purple-600 border-fuchsia-300/50 text-white"
+                      : "bg-[#221242] border-purple-400/20 text-purple-200/75 hover:bg-[#2b1854]"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
           )}
+        </section>
 
-          <div className="pt-2 border-t border-violet-500/15 space-y-2.5">
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-medium text-violet-200">
-                အသံ Speed (တင်ရန် / လျှော့ရန်)
-              </span>
-              <span className="px-2 py-0.5 rounded-md bg-violet-500/20 text-fuchsia-200 font-bold border border-violet-400/25">
-                {voiceSpeed.toFixed(2)}x
-              </span>
+        <section className="rounded-3xl bg-[#180d30]/90 border border-purple-400/20 p-3.5 space-y-3 shadow-lg backdrop-blur-md">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold uppercase tracking-wider text-purple-200">
+              {t.section2}
+            </span>
+            <span className="text-[11px] font-bold text-fuchsia-300">
+              {selectedVoice === "nilar" ? t.voiceFemale : t.voiceMale} •{" "}
+              {language === "en" ? "EN" : "MY"}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-1.5">
+            <button
+              type="button"
+              onClick={() => setVoiceStyle("pro_recap")}
+              className={`py-2 px-2.5 rounded-2xl text-[11px] font-bold border transition cursor-pointer ${
+                voiceStyle === "pro_recap"
+                  ? "bg-gradient-to-r from-fuchsia-600 to-purple-600 border-fuchsia-300/50 text-white shadow"
+                  : "bg-[#221242] border-purple-400/20 text-purple-200/75 hover:bg-[#2b1854]"
+              }`}
+            >
+              {t.stylePro}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setVoiceStyle("conversational")}
+              className={`py-2 px-2.5 rounded-2xl text-[11px] font-bold border transition cursor-pointer ${
+                voiceStyle === "conversational"
+                  ? "bg-gradient-to-r from-fuchsia-600 to-purple-600 border-fuchsia-300/50 text-white shadow"
+                  : "bg-[#221242] border-purple-400/20 text-purple-200/75 hover:bg-[#2b1854]"
+              }`}
+            >
+              {t.styleConv}
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => handleSelectVoice("thiha")}
+              className={`py-2.5 px-2 rounded-2xl text-xs font-bold border transition cursor-pointer ${
+                selectedVoice === "thiha"
+                  ? "bg-gradient-to-r from-fuchsia-600 to-purple-600 border-fuchsia-300/50 text-white shadow-[0_6px_18px_rgba(168,85,247,0.45)]"
+                  : "bg-[#221242] border-purple-400/20 text-purple-200/75 hover:bg-[#2b1854]"
+              }`}
+            >
+              {t.voiceMale}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleSelectVoice("nilar")}
+              className={`py-2.5 px-2 rounded-2xl text-xs font-bold border transition cursor-pointer ${
+                selectedVoice === "nilar"
+                  ? "bg-gradient-to-r from-fuchsia-600 to-purple-600 border-fuchsia-300/50 text-white shadow-[0_6px_18px_rgba(168,85,247,0.45)]"
+                  : "bg-[#221242] border-purple-400/20 text-purple-200/75 hover:bg-[#2b1854]"
+              }`}
+            >
+              {t.voiceFemale}
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => handleSelectLanguage("my")}
+              className={`py-2.5 px-2 rounded-2xl text-xs font-bold border transition cursor-pointer ${
+                language === "my"
+                  ? "bg-gradient-to-r from-emerald-600 to-teal-600 border-emerald-300/50 text-white shadow-[0_6px_18px_rgba(16,185,129,0.35)]"
+                  : "bg-[#221242] border-purple-400/20 text-purple-200/75 hover:bg-[#2b1854]"
+              }`}
+            >
+              {t.langMy}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleSelectLanguage("en")}
+              className={`py-2.5 px-2 rounded-2xl text-xs font-bold border transition cursor-pointer ${
+                language === "en"
+                  ? "bg-gradient-to-r from-emerald-600 to-teal-600 border-emerald-300/50 text-white shadow-[0_6px_18px_rgba(16,185,129,0.35)]"
+                  : "bg-[#221242] border-purple-400/20 text-purple-200/75 hover:bg-[#2b1854]"
+              }`}
+            >
+              {t.langEn}
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2.5 pt-1">
+            <div className="rounded-2xl bg-[#211140] border border-purple-400/20 p-2.5 space-y-1.5">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-purple-200/80 font-semibold">
+                  {t.pitchLabel}
+                </span>
+                <span className="text-fuchsia-300 font-bold">
+                  {pitchShift > 0 ? `+${pitchShift}` : pitchShift}
+                </span>
+              </div>
+              <input
+                type="range"
+                min={-12}
+                max={12}
+                step={1}
+                value={pitchShift}
+                onChange={(e) => setPitchShift(parseInt(e.target.value, 10))}
+                className="w-full accent-fuchsia-400 cursor-pointer"
+              />
             </div>
 
-            <input
-              type="range"
-              min={0.7}
-              max={1.4}
-              step={0.01}
-              value={voiceSpeed}
-              onChange={(e) => setVoiceSpeed(parseFloat(e.target.value))}
-              className="w-full accent-fuchsia-400 cursor-pointer"
-            />
-
-            <div className="grid grid-cols-3 gap-2 text-xs">
-              <button
-                type="button"
-                onClick={() => setVoiceSpeed(0.85)}
-                className="py-1.5 rounded-lg border font-medium transition bg-[#20123b]/70 border-violet-500/20 text-violet-200/80 hover:bg-[#29174c]"
-              >
-                နှေး (0.85x)
-              </button>
-              <button
-                type="button"
-                onClick={() => setVoiceSpeed(1.0)}
-                className="py-1.5 rounded-lg border font-medium transition bg-[#20123b]/70 border-violet-500/20 text-violet-200/80 hover:bg-[#29174c]"
-              >
-                ပုံမှန် (1.00x)
-              </button>
-              <button
-                type="button"
-                onClick={() => setVoiceSpeed(1.2)}
-                className="py-1.5 rounded-lg border font-medium transition bg-[#20123b]/70 border-violet-500/20 text-violet-200/80 hover:bg-[#29174c]"
-              >
-                မြန် (1.20x)
-              </button>
+            <div className="rounded-2xl bg-[#211140] border border-purple-400/20 p-2.5 space-y-1.5">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-purple-200/80 font-semibold">
+                  {t.speedLabel}
+                </span>
+                <span className="text-purple-200 font-bold">
+                  {voiceSpeed.toFixed(2)}x
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0.8}
+                max={1.25}
+                step={0.01}
+                value={voiceSpeed}
+                onChange={(e) => setVoiceSpeed(parseFloat(e.target.value))}
+                className="w-full accent-purple-400 cursor-pointer"
+              />
             </div>
           </div>
         </section>
 
-        <section className="rounded-2xl bg-[#160d29]/85 border border-violet-500/20 p-4 space-y-2.5 shadow-lg backdrop-blur-md">
+        <section className="rounded-3xl bg-[#180d30]/90 border border-purple-400/20 p-3.5 space-y-2 shadow-lg backdrop-blur-md">
           <div className="flex items-center justify-between">
-            <label className="text-sm font-semibold text-violet-100 flex items-center gap-2">
-              <span className="w-5 h-5 rounded-md bg-violet-500/25 border border-violet-400/30 text-[11px] font-bold flex items-center justify-center text-violet-200">
-                4
-              </span>
-              <span>ရိုက်ထည့်သော စာသား (အကြိုက်ထည့်)</span>
+            <label className="text-xs font-bold uppercase tracking-wider text-purple-200">
+              {t.section3}
             </label>
-            <span className="text-[11px] font-semibold px-2 py-0.5 rounded-md border bg-violet-500/15 text-violet-200/80 border-violet-400/20">
-              {scriptText.length.toLocaleString()} လုံး
+            <span className="text-[11px] font-bold px-2 py-0.5 rounded-lg bg-purple-500/20 text-purple-200 border border-purple-400/25">
+              {scriptText.length.toLocaleString()}
             </span>
           </div>
-          <p className="text-[11px] text-violet-300/65">
-            မည်သည့်ဘာသာမဆို မြန်မာပြန်ပေးပြီး အသံထွက် + စာတန်း ထိုးပေးမည်
-          </p>
+
           <textarea
-            rows={5}
+            rows={4}
             value={scriptText}
             onChange={(e) => setScriptText(e.target.value)}
-            placeholder="ဇာတ်လမ်း သို့မဟုတ် ဇာတ်ညွှန်းစာသားကို အကြိုက် ရိုက်ထည့်ပါ..."
-            className="w-full rounded-xl bg-[#100820]/90 border border-violet-500/25 p-3 text-sm text-white placeholder:text-violet-300/35 focus:outline-none focus:border-fuchsia-400/70 transition"
+            placeholder={t.scriptPlaceholder}
+            className="w-full rounded-2xl bg-[#110824] border border-purple-400/25 p-3 text-xs leading-relaxed text-white placeholder:text-purple-300/35 focus:outline-none focus:border-fuchsia-400/70 transition"
           />
         </section>
 
@@ -537,17 +669,17 @@ export default function App() {
           type="button"
           onClick={handleGenerate}
           disabled={isGenerating || isUploading}
-          className="w-full py-3.5 px-5 rounded-2xl bg-gradient-to-r from-violet-600 via-purple-600 to-fuchsia-600 hover:brightness-110 active:scale-[0.99] disabled:opacity-50 font-bold text-sm text-white shadow-[0_10px_30px_-6px_rgba(192,38,211,0.55)] transition-all"
+          className="w-full py-3.5 px-5 rounded-2xl bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600 hover:brightness-110 active:scale-[0.99] disabled:opacity-50 font-extrabold text-xs tracking-wide uppercase text-white shadow-[0_12px_30px_-6px_rgba(168,85,247,0.6)] transition-all cursor-pointer"
         >
-          {isGenerating ? "⚡ ထုတ်နေပါသည်..." : "▶ အသံ + စာတန်း ထုတ်မည်"}
+          {isGenerating ? t.generatingBtn : t.generateBtn}
         </button>
 
         {statusText && (
           <div
-            className={`rounded-2xl px-4 py-3 text-xs font-medium border backdrop-blur-md ${
+            className={`rounded-2xl px-3.5 py-2.5 text-xs font-medium border ${
               isError
-                ? "bg-rose-950/75 border-rose-500/45 text-rose-200 shadow-[0_6px_20px_rgba(244,63,94,0.18)]"
-                : "bg-emerald-950/65 border-emerald-400/40 text-emerald-200 shadow-[0_6px_20px_rgba(16,185,129,0.16)]"
+                ? "bg-rose-950/80 border-rose-500/45 text-rose-200"
+                : "bg-emerald-950/70 border-emerald-400/40 text-emerald-200"
             }`}
           >
             {statusText}
@@ -555,38 +687,75 @@ export default function App() {
         )}
 
         {outputUrl && (
-          <section className="rounded-2xl bg-[#160d29]/90 border border-violet-400/30 p-4 space-y-3 shadow-xl backdrop-blur-md">
+          <section className="rounded-3xl bg-[#180d30]/95 border border-purple-400/30 p-3.5 space-y-2.5 shadow-xl">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-bold uppercase tracking-wider text-violet-200">
-                ထွက်လာသော Video ဖိုင်
+              <span className="text-xs font-bold uppercase tracking-wider text-purple-200">
+                {t.previewTitle}
               </span>
-              <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
-                Ready
-              </span>
+              <button
+                type="button"
+                onClick={handleReplayFromStart}
+                className="text-[11px] font-bold px-2.5 py-1 rounded-xl bg-fuchsia-500/20 text-fuchsia-200 border border-fuchsia-400/30 hover:bg-fuchsia-500/30 transition cursor-pointer"
+              >
+                {t.replayBtn}
+              </button>
             </div>
+
             <video
+              ref={previewVideoRef}
               controls
+              playsInline
               src={outputUrl}
-              className="w-full rounded-xl border border-violet-500/20 bg-black"
+              className="w-full rounded-2xl border border-purple-400/20 bg-black"
             />
+
+            {videoAudit && (
+              <div className="grid grid-cols-2 gap-2 text-[11px] bg-[#110824] rounded-2xl p-2.5 border border-purple-400/15 text-purple-200/85">
+                <div>
+                  Voice:{" "}
+                  <span className="font-bold text-fuchsia-300">
+                    {videoAudit.voiceName || "THIHA"}
+                  </span>
+                </div>
+                <div>
+                  Lang:{" "}
+                  <span className="font-bold text-emerald-300">
+                    {(videoAudit.language || language).toUpperCase()}
+                  </span>
+                </div>
+                <div>
+                  Pitch:{" "}
+                  <span className="font-bold text-white">
+                    {videoAudit.pitchShift ?? 0}
+                  </span>
+                </div>
+                <div>
+                  Duration:{" "}
+                  <span className="font-bold text-white">
+                    {videoAudit.durationSec}s
+                  </span>
+                </div>
+              </div>
+            )}
+
             {downloadUrl && (
               <a
                 href={downloadUrl}
                 download
-                className="block w-full text-center py-2.5 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:brightness-110 text-xs font-bold text-white shadow transition"
+                className="block w-full text-center py-2.5 px-4 rounded-2xl bg-gradient-to-r from-fuchsia-500 to-purple-600 hover:brightness-110 text-xs font-extrabold text-white shadow transition"
               >
-                ⬇ Download MP4 ဖိုင်ဆွဲယူရန်
+                {t.downloadBtn}
               </a>
             )}
           </section>
         )}
 
         {subtitleText && (
-          <section className="rounded-2xl bg-[#160d29]/90 border border-violet-500/25 p-4 space-y-2 shadow-lg backdrop-blur-md">
-            <div className="text-xs font-bold uppercase tracking-wider text-violet-200">
-              မြန်မာစာတန်း (Subtitles)
+          <section className="rounded-3xl bg-[#180d30]/95 border border-purple-400/25 p-3.5 space-y-2 shadow-lg">
+            <div className="text-xs font-bold uppercase tracking-wider text-purple-200">
+              {t.scriptSyncTitle}
             </div>
-            <pre className="whitespace-pre-wrap text-xs leading-relaxed text-violet-100/90 font-sans bg-[#100820]/80 rounded-xl p-3 border border-violet-500/15">
+            <pre className="whitespace-pre-wrap text-xs leading-relaxed text-purple-100/90 font-sans bg-[#110824] rounded-2xl p-3 border border-purple-400/15">
               {subtitleText}
             </pre>
           </section>
