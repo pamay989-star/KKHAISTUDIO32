@@ -10,17 +10,18 @@ type OutputLang = "my" | "en";
 const UI_TEXT = {
   my: {
     subtitle: "Pro Recap Voice AI • MY / EN • THIHA / NILAR",
-    langBadgeLabel: "Lang",
-    section1: "01 • Video Source",
-    subTag: "BOTTOM SUB",
-    uploadingVideo: "Video တင်နေပါသည်...",
+    section1: "01 • Video & Subtitle",
+    uploadingVideo: "ဖုန်းမှ Video တင်နေပါသည်...",
     changeVideoHint: "ပြောင်းရန် ထပ်နှိပ်ပါ",
     pickVideoTitle: "+ Video ဖိုင်ရွေးရန် နှိပ်ပါ",
-    pickVideoSub: "မူလစာဝါးပြီး အောက်ခြေမှာ စာတန်းထိုးမည်",
+    pickVideoSub: "စာတန်းမထိုးဘူး ပိတ်ထားရင် အမြန်ဆုံးထွက်မည်",
+    subToggleLabel: "စာတန်းထိုးမည် / မထိုးဘူး",
+    subOnBtn: "စာတန်းထိုးမယ် (ဖွင့်)",
+    subOffBtn: "မထိုးဘူး (ပိတ်)",
     blurLabel: "မူလစာ ဝါးပေးမည်",
-    blurBottom: "အောက်ခြေဝါး",
-    blurTop: "အပေါ်ပိုင်းဝါး",
-    blurBoth: "နှစ်ဖက်ဝါး",
+    blurBottom: "အောက်ခြေ",
+    blurTop: "အပေါ်ပိုင်း",
+    blurBoth: "နှစ်ဖက်",
     section2: "02 • Voice & Language",
     stylePro: "Pro Recap (ပရော်ဖက်ရှင်နယ်)",
     styleConv: "Conversational (သဘာဝကျကျ)",
@@ -28,7 +29,7 @@ const UI_TEXT = {
     voiceFemale: "NILAR (မ)",
     langMy: "မြန်မာ (MY)",
     langEn: "English (EN)",
-    pitchLabel: "Pitch",
+    pitchLabel: "Pitch (0 = ပုံမှန်)",
     speedLabel: "Speed",
     section3: "03 • Script စာသား",
     scriptPlaceholder:
@@ -51,30 +52,31 @@ const UI_TEXT = {
     videoUploadFail: "Video တင်မရပါ။",
     generatingStatus: (voice: string, langLabel: string) =>
       `${voice} (${langLabel}) နဲ့ အချိန်ကိုက် ထုတ်နေပါသည်...`,
-    doneStatus: "ပြီးပါပြီ။ Video ကို ပြန်ကြည့်ပြီး စစ်ဆေးနိုင်ပါပြီ။",
+    doneStatus: "ပြီးပါပြီ။ Video ကို ပြန်ကြည့်ပြီး Download ဆွဲနိုင်ပါပြီ။",
     generateFail: "Video ထုတ်မရပါ။",
   },
   en: {
     subtitle: "Pro Recap Voice AI • MY / EN • THIHA / NILAR",
-    langBadgeLabel: "Lang",
-    section1: "01 • Video Source",
-    subTag: "BOTTOM SUB",
+    section1: "01 • Video & Subtitle",
     uploadingVideo: "Uploading video...",
     changeVideoHint: "Tap again to change video",
     pickVideoTitle: "+ Tap to choose a video file",
-    pickVideoSub: "Blur original text and burn bottom subtitles",
-    blurLabel: "Blur Original Subtitles",
-    blurBottom: "Blur Bottom",
-    blurTop: "Blur Top",
-    blurBoth: "Blur Both",
+    pickVideoSub: "Subtitle OFF gives fastest output",
+    subToggleLabel: "Burn Subtitles ON / OFF",
+    subOnBtn: "Subtitle ON (Burn)",
+    subOffBtn: "Subtitle OFF (No Sub)",
+    blurLabel: "Blur Original Text",
+    blurBottom: "Bottom",
+    blurTop: "Top",
+    blurBoth: "Both",
     section2: "02 • Voice & Language",
     stylePro: "Pro Recap (Narrator)",
     styleConv: "Conversational (Natural)",
-    voiceMale: "KKH (Male)",
-    voiceFemale: "HSU(Female)",
+    voiceMale: "THIHA (Male)",
+    voiceFemale: "NILAR (Female)",
     langMy: "Burmese (MY)",
     langEn: "English (EN)",
-    pitchLabel: "Pitch",
+    pitchLabel: "Pitch (0 = Default)",
     speedLabel: "Speed",
     section3: "03 • Script Text",
     scriptPlaceholder:
@@ -145,7 +147,8 @@ async function fetchWithRouteFallback(
 
 export default function App() {
   const [videoFile, setVideoFile] = useState<string>("");
-  const [blurEnabled, setBlurEnabled] = useState<boolean>(true);
+  const [burnSubtitles, setBurnSubtitles] = useState<boolean>(false);
+  const [blurEnabled, setBlurEnabled] = useState<boolean>(false);
   const [subPosition, setSubPosition] = useState<SubPosition>("bottom");
 
   const [selectedVoice, setSelectedVoice] = useState<VoiceId>("thiha");
@@ -301,6 +304,7 @@ export default function App() {
             voiceStyle,
             language,
             manualText: scriptText.trim(),
+            burnSubtitles,
             blurOriginalSub: blurEnabled,
             blurArea: subPosition,
             voiceSpeed,
@@ -401,10 +405,10 @@ export default function App() {
 
             <div className="shrink-0 rounded-2xl bg-[#27154d] border border-purple-400/25 px-2.5 py-1.5 text-right">
               <div className="text-[10px] uppercase tracking-wider text-purple-300/70">
-                {t.langBadgeLabel}
+                Voice
               </div>
               <div className="text-xs font-extrabold text-fuchsia-300">
-                {language === "en" ? "EN" : "MY"}
+                {selectedVoice === "nilar" ? "NILAR" : "THIHA"}
               </div>
             </div>
           </div>
@@ -415,8 +419,8 @@ export default function App() {
             <span className="text-xs font-bold uppercase tracking-wider text-purple-200">
               {t.section1}
             </span>
-            <span className="text-[11px] font-semibold px-2 py-0.5 rounded-lg bg-purple-500/20 text-purple-200 border border-purple-400/25">
-              {t.subTag}
+            <span className="text-[11px] font-bold px-2 py-0.5 rounded-lg bg-purple-500/20 text-purple-200 border border-purple-400/25">
+              {burnSubtitles ? "SUB ON" : "SUB OFF"}
             </span>
           </div>
 
@@ -463,6 +467,37 @@ export default function App() {
               </div>
             )}
           </button>
+
+          <div className="space-y-1.5 pt-1">
+            <div className="text-xs font-semibold text-purple-100 px-1">
+              {t.subToggleLabel}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setBurnSubtitles(true)}
+                className={`py-2 px-2.5 rounded-2xl text-xs font-bold border transition cursor-pointer ${
+                  burnSubtitles
+                    ? "bg-gradient-to-r from-fuchsia-600 to-purple-600 border-fuchsia-300/60 text-white shadow"
+                    : "bg-[#221242] border-purple-400/20 text-purple-200/75 hover:bg-[#2b1854]"
+                }`}
+              >
+                {t.subOnBtn}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setBurnSubtitles(false)}
+                className={`py-2 px-2.5 rounded-2xl text-xs font-bold border transition cursor-pointer ${
+                  !burnSubtitles
+                    ? "bg-gradient-to-r from-amber-600 to-orange-600 border-amber-300/60 text-white shadow"
+                    : "bg-[#221242] border-purple-400/20 text-purple-200/75 hover:bg-[#2b1854]"
+                }`}
+              >
+                {t.subOffBtn}
+              </button>
+            </div>
+          </div>
 
           <div className="flex items-center justify-between pt-1 px-1">
             <span className="text-xs font-semibold text-purple-100">
@@ -718,9 +753,9 @@ export default function App() {
                   </span>
                 </div>
                 <div>
-                  Lang:{" "}
+                  Sub:{" "}
                   <span className="font-bold text-emerald-300">
-                    {(videoAudit.language || language).toUpperCase()}
+                    {videoAudit.subBurned ? "ON" : "OFF"}
                   </span>
                 </div>
                 <div>
